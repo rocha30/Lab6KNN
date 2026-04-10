@@ -31,7 +31,7 @@ if (length(faltantes) > 0) install.packages(faltantes)
 ```
 
 
-
+data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAAAWElEQVR42mNgGPTAxsZmJsVqQApgmGw1yApwKcQiT7phRBuCzzCSDSHGMKINIeDNmWQlA2IigKJwIssQkHdINgxfmBBtGDEBS3KCxBc7pMQgMYE5c/AXPwAwSX4lV3pTWwAAAABJRU5ErkJggg==
 ## Preparación del entorno
 
 ```{r librerias}
@@ -1111,13 +1111,7 @@ cat("- Consolidar conclusiones en tono consultoría (hallazgo -> implicación ->
 cat("- Evitar subtítulos que copien literalmente los enunciados del laboratorio.\n")
 ```
 
-## Guion recomendado de redacción conjunta
 
-1. Introducción: problema de negocio y objetivo predictivo.
-2. Metodología: limpieza, split, normalización y construcción de modelos.
-3. Resultados: desempeño de regresión y clasificación en test.
-4. Hallazgos: sesgos, clases difíciles y limitaciones.
-5. Recomendaciones: tuning de hiperparámetros y validación cruzada para la entrega final.
 
 ---
 
