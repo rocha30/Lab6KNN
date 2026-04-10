@@ -450,3 +450,396 @@ cat("(Integrantes B y C: carguen este archivo para asegurar el mismo split)\n")
 ---
 
 *Análisis realizado por Integrante A – SmartStay Advisors | CC3074 Minería de Datos – Semestre I 2026*
+
+---
+
+# Integrante B – Evaluación y Comparación de Modelos
+
+## Preparación del entorno (Integrante B)
+
+```{r setup-b}
+# Paquetes adicionales para los modelos de comparación
+paquetes_b <- c("rpart", "rpart.plot", "e1071")
+faltantes_b <- paquetes_b[!paquetes_b %in% installed.packages()[, "Package"]]
+if (length(faltantes_b) > 0) install.packages(faltantes_b)
+
+library(rpart)
+library(rpart.plot)
+library(e1071)
+```
+
+```{r cargar-resultados-a}
+# Cargar objetos generados por el Integrante A
+# Esto garantiza el mismo split train/test en todos los modelos
+load("knn_regresion_resultados.RData")
+
+cat("Objetos disponibles del Integrante A:\n")
+cat(sprintf("  - Train: %d observaciones\n", nrow(train_raw)))
+cat(sprintf("  - Test : %d observaciones\n", nrow(test_raw)))
+cat(sprintf("  - KNN k óptimo: %d\n", k_optimo))
+cat(sprintf("  - KNN RMSE test: $%.4f\n", rmse_test))
+```
+
+---
+
+## Evaluación detallada del modelo KNN de regresión
+
+Antes de comparar contra otros modelos, se profundiza en el comportamiento del KNN: cómo distribuye sus errores y si existe sesgo sistemático de sobreestimación o subestimación.
+
+```{r knn-analisis-sesgo}
+# Reconstruir data frame de resultados KNN
+df_knn <- data.frame(
+  Real     = y_test,
+  Predicho = pred_test,
+  Residuo  = y_test - pred_test
+)
+
+residuo_medio <- mean(df_knn$Residuo)
+pct_sobreestima <- mean(df_knn$Residuo < 0) * 100
+pct_subestima   <- mean(df_knn$Residuo > 0) * 100
+
+cat("--- Análisis de Sesgo del KNN ---\n")
+cat(sprintf("Residuo medio        : $%.4f\n", residuo_medio))
+cat(sprintf("Predicciones donde subestima (Real > Predicho): %.1f%%\n", pct_subestima))
+cat(sprintf("Predicciones donde sobreestima (Real < Predicho): %.1f%%\n", pct_sobreestima))
+cat(sprintf("\nConclusión: %s\n",
+    ifelse(residuo_medio > 5,
+           "El modelo tiende a SUBESTIMAR los precios reales.",
+           ifelse(residuo_medio < -5,
+                  "El modelo tiende a SOBREESTIMAR los precios reales.",
+                  "El modelo no presenta sesgo sistemático relevante."))))
+```
+
+```{r knn-residuos-por-rango, fig.cap="Residuos del KNN según rango de precio real"}
+# Clasificar observaciones en cuartiles de precio para ver dónde falla más
+df_knn <- df_knn %>%
+  mutate(
+    Rango_precio = cut(
+      Real,
+      breaks = quantile(Real, probs = c(0, 0.25, 0.50, 0.75, 1.0)),
+      labels = c("Q1: Barato", "Q2: Bajo-Medio", "Q3: Alto-Medio", "Q4: Caro"),
+      include.lowest = TRUE
+    )
+  )
+
+ggplot(df_knn, aes(x = Rango_precio, y = Residuo, fill = Rango_precio)) +
+  geom_boxplot(alpha = 0.75, outlier.alpha = 0.3) +
+  geom_hline(yintercept = 0, color = "#e74c3c", linetype = "dashed", linewidth = 1) +
+  scale_fill_manual(values = c("#3498db", "#2ecc71", "#f39c12", "#e74c3c")) +
+  labs(
+    title    = "Distribución de Residuos KNN por Rango de Precio",
+    subtitle = "¿En qué rango falla más el modelo?",
+    x = "Rango de Precio Real",
+    y = "Residuo (Real − Predicho, USD)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+```{r knn-interpretacion-rangos}
+# Resumen de RMSE por cuartil de precio
+resumen_rangos <- df_knn %>%
+  group_by(Rango_precio) %>%
+  summarise(
+    N       = n(),
+    RMSE    = round(sqrt(mean(Residuo^2)), 2),
+    MAE     = round(mean(abs(Residuo)), 2),
+    Sesgo   = round(mean(Residuo), 2),
+    .groups = "drop"
+  )
+
+resumen_rangos %>%
+  kable(
+    col.names = c("Rango de Precio", "N", "RMSE (USD)", "MAE (USD)", "Sesgo Medio (USD)"),
+    caption   = "Desempeño del KNN por cuartil de precio real (test set)"
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  column_spec(3, bold = TRUE)
+```
+
+---
+
+## Modelos de comparación
+
+Para una comparación justa, todos los modelos se entrenan con `train_raw` y se evalúan sobre `test_raw`, el mismo split usado por el Integrante A.
+
+### Regresión Lineal
+
+```{r modelo-lm}
+# Entrenar regresión lineal con todas las variables del modelo
+modelo_lm <- lm(price ~ ., data = train_raw)
+
+# Predecir en test set
+pred_lm <- predict(modelo_lm, newdata = test_raw)
+
+# Métricas
+rmse_lm <- rmse(y_test, pred_lm)
+mae_lm  <- mae(y_test,  pred_lm)
+r2_lm   <- cor(y_test,  pred_lm)^2
+
+cat("--- Regresión Lineal (Test Set) ---\n")
+cat(sprintf("RMSE : $%.4f\n", rmse_lm))
+cat(sprintf("MAE  : $%.4f\n", mae_lm))
+cat(sprintf("R²   : %.4f\n",  r2_lm))
+```
+
+### Árbol de Regresión
+
+```{r modelo-arbol}
+# Entrenar árbol de regresión (ANOVA = modo regresión en rpart)
+modelo_arbol <- rpart(
+  price ~ .,
+  data    = train_raw,
+  method  = "anova",
+  control = rpart.control(cp = 0.01, minsplit = 20)
+)
+
+# Predecir en test set
+pred_arbol <- predict(modelo_arbol, newdata = test_raw)
+
+# Métricas
+rmse_arbol <- rmse(y_test, pred_arbol)
+mae_arbol  <- mae(y_test,  pred_arbol)
+r2_arbol   <- cor(y_test,  pred_arbol)^2
+
+cat("--- Árbol de Regresión (Test Set) ---\n")
+cat(sprintf("RMSE : $%.4f\n", rmse_arbol))
+cat(sprintf("MAE  : $%.4f\n", mae_arbol))
+cat(sprintf("R²   : %.4f\n",  r2_arbol))
+```
+
+```{r arbol-plot, fig.cap="Estructura del árbol de regresión (cp = 0.01)", fig.height=6}
+rpart.plot(
+  modelo_arbol,
+  type    = 4,
+  extra   = 101,
+  under   = TRUE,
+  cex     = 0.7,
+  main    = "Árbol de Regresión – Precio (USD)"
+)
+```
+
+### Naive Bayes (aproximación a regresión)
+
+Naive Bayes es un clasificador, no un modelo de regresión directa. Para incluirlo en la comparación se discretiza el precio en tres categorías (terciles: **barata / media / cara**), se entrena el clasificador y las predicciones de categoría se mapean al precio mediano observado en entrenamiento para cada grupo. Esto permite calcular RMSE/MAE comparables.
+
+```{r modelo-nb}
+# Definir terciles sobre el set de entrenamiento
+q33 <- quantile(train_raw$price, 1/3)
+q67 <- quantile(train_raw$price, 2/3)
+
+# Medianas de cada grupo (para convertir predicciones categoriales a numéricas)
+med_barata <- median(train_raw$price[train_raw$price <= q33])
+med_media  <- median(train_raw$price[train_raw$price > q33 & train_raw$price <= q67])
+med_cara   <- median(train_raw$price[train_raw$price > q67])
+
+cat(sprintf("Terciles (train) – Barata: ≤$%.0f | Media: $%.0f–$%.0f | Cara: >$%.0f\n",
+            q33, q33, q67, q67))
+cat(sprintf("Mediana por grupo – Barata: $%.2f | Media: $%.2f | Cara: $%.2f\n",
+            med_barata, med_media, med_cara))
+
+# Preparar datasets con variable categórica
+train_nb <- train_raw %>%
+  mutate(price_cat = cut(
+    price,
+    breaks = c(-Inf, q33, q67, Inf),
+    labels = c("barata", "media", "cara")
+  )) %>%
+  select(-price)
+
+test_nb <- test_raw %>% select(-price)
+
+# Entrenar Naive Bayes
+modelo_nb <- naiveBayes(price_cat ~ ., data = train_nb)
+
+# Predecir categoría en test set
+pred_nb_cat <- predict(modelo_nb, newdata = test_nb)
+
+# Convertir categoría → valor numérico (mediana del grupo)
+pred_nb_num <- dplyr::case_when(
+  pred_nb_cat == "barata" ~ med_barata,
+  pred_nb_cat == "media"  ~ med_media,
+  pred_nb_cat == "cara"   ~ med_cara
+)
+
+# Métricas
+rmse_nb <- rmse(y_test, pred_nb_num)
+mae_nb  <- mae(y_test,  pred_nb_num)
+r2_nb   <- cor(y_test,  pred_nb_num)^2
+
+cat("\n--- Naive Bayes → Regresión aproximada (Test Set) ---\n")
+cat(sprintf("RMSE : $%.4f\n", rmse_nb))
+cat(sprintf("MAE  : $%.4f\n", mae_nb))
+cat(sprintf("R²   : %.4f\n",  r2_nb))
+
+# Distribución de predicciones categóricas
+cat("\nDistribución de predicciones NB:\n")
+print(table(pred_nb_cat))
+```
+
+---
+
+## Tabla comparativa de modelos
+
+```{r tabla-comparativa}
+comparacion <- data.frame(
+  Modelo = c("KNN Regresión", "Regresión Lineal", "Árbol de Regresión", "Naive Bayes*"),
+  RMSE   = round(c(rmse_test, rmse_lm, rmse_arbol, rmse_nb), 2),
+  MAE    = round(c(mae_test,  mae_lm,  mae_arbol,  mae_nb),  2),
+  R2     = round(c(r2_test,   r2_lm,   r2_arbol,   r2_nb),   4)
+)
+
+# Identificar mejor modelo por RMSE
+mejor_idx <- which.min(comparacion$RMSE)
+
+comparacion %>%
+  kable(
+    col.names = c("Modelo", "RMSE (USD)", "MAE (USD)", "R²"),
+    caption   = "Comparación de modelos de predicción de precio (test set) | *NB aproximado vía medianas de terciles"
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  row_spec(mejor_idx, bold = TRUE, background = "#d5f5e3") %>%
+  row_spec(0, bold = TRUE)
+```
+
+---
+
+## Visualizaciones comparativas
+
+```{r grafico-rmse-comparacion, fig.cap="RMSE por modelo – menor es mejor"}
+comparacion_long <- comparacion %>%
+  mutate(Modelo = factor(Modelo, levels = Modelo[order(RMSE)]))
+
+ggplot(comparacion_long, aes(x = Modelo, y = RMSE, fill = Modelo)) +
+  geom_col(alpha = 0.85, width = 0.6) +
+  geom_text(aes(label = paste0("$", RMSE)), vjust = -0.4, size = 4.2, fontface = "bold") +
+  scale_fill_manual(values = c("#3498db", "#2ecc71", "#f39c12", "#e74c3c")) +
+  labs(
+    title    = "Comparación de RMSE entre Modelos",
+    subtitle = "Conjunto de prueba (test set) – mismo split 80/20",
+    x = NULL,
+    y = "RMSE (USD)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+```{r grafico-r2-comparacion, fig.cap="R² por modelo – mayor es mejor"}
+comparacion_r2 <- comparacion %>%
+  mutate(Modelo = factor(Modelo, levels = Modelo[order(-R2)]))
+
+ggplot(comparacion_r2, aes(x = Modelo, y = R2, fill = Modelo)) +
+  geom_col(alpha = 0.85, width = 0.6) +
+  geom_text(aes(label = round(R2, 3)), vjust = -0.4, size = 4.2, fontface = "bold") +
+  scale_fill_manual(values = c("#2ecc71", "#3498db", "#f39c12", "#e74c3c")) +
+  scale_y_continuous(limits = c(0, max(comparacion$R2) * 1.15)) +
+  labs(
+    title    = "Comparación de R² entre Modelos",
+    subtitle = "Proporción de varianza explicada en test set",
+    x = NULL,
+    y = "R²"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+```{r grafico-scatter-comparacion, fig.cap="Real vs Predicho para cada modelo (test set)", fig.height=9, fig.width=10}
+# Unir todas las predicciones en un solo data frame largo
+df_comp <- bind_rows(
+  data.frame(Real = y_test, Predicho = pred_test,  Modelo = "KNN Regresión"),
+  data.frame(Real = y_test, Predicho = pred_lm,    Modelo = "Regresión Lineal"),
+  data.frame(Real = y_test, Predicho = pred_arbol, Modelo = "Árbol de Regresión"),
+  data.frame(Real = y_test, Predicho = pred_nb_num, Modelo = "Naive Bayes*")
+)
+
+ggplot(df_comp, aes(x = Real, y = Predicho)) +
+  geom_point(alpha = 0.25, color = "#2c7bb6", size = 1.2) +
+  geom_abline(slope = 1, intercept = 0, color = "#e74c3c",
+              linetype = "dashed", linewidth = 0.9) +
+  facet_wrap(~ Modelo, scales = "free", ncol = 2) +
+  labs(
+    title    = "Real vs Predicho por Modelo – Test Set",
+    subtitle = "La línea roja punteada indica predicción perfecta",
+    x = "Precio Real (USD)",
+    y = "Precio Predicho (USD)"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+```{r grafico-residuos-boxplot, fig.cap="Distribución de residuos absolutos por modelo"}
+df_comp <- df_comp %>%
+  mutate(
+    Residuo_abs = abs(Real - Predicho),
+    Modelo      = factor(Modelo, levels = comparacion$Modelo[order(comparacion$RMSE)])
+  )
+
+ggplot(df_comp, aes(x = Modelo, y = Residuo_abs, fill = Modelo)) +
+  geom_boxplot(alpha = 0.75, outlier.alpha = 0.2) +
+  scale_fill_manual(values = c("#3498db", "#2ecc71", "#f39c12", "#e74c3c")) +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  labs(
+    title    = "Error Absoluto por Modelo – Test Set",
+    subtitle = "Caja más baja = mejor desempeño general",
+    x = NULL,
+    y = "Error Absoluto (USD)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+---
+
+## Análisis y conclusión
+
+```{r conclusion-comparacion}
+mejor_modelo <- comparacion$Modelo[which.min(comparacion$RMSE)]
+peor_modelo  <- comparacion$Modelo[which.max(comparacion$RMSE)]
+
+cat("=== Resumen Ejecutivo ===\n\n")
+cat(sprintf("Mejor modelo por RMSE  : %s ($%.2f)\n", mejor_modelo, min(comparacion$RMSE)))
+cat(sprintf("Mejor modelo por R²    : %s (%.4f)\n",
+            comparacion$Modelo[which.max(comparacion$R2)], max(comparacion$R2)))
+cat(sprintf("Modelo con mayor error : %s ($%.2f RMSE)\n\n", peor_modelo, max(comparacion$RMSE)))
+
+# Diferencia KNN vs Regresión Lineal
+diff_knn_lm <- rmse_test - rmse_lm
+cat(sprintf("KNN vs Regresión Lineal (RMSE): %+.2f USD (%s)\n",
+            diff_knn_lm,
+            ifelse(diff_knn_lm < 0, "KNN es mejor", "Regresión Lineal es mejor")))
+
+diff_knn_arbol <- rmse_test - rmse_arbol
+cat(sprintf("KNN vs Árbol de Regresión (RMSE): %+.2f USD (%s)\n",
+            diff_knn_arbol,
+            ifelse(diff_knn_arbol < 0, "KNN es mejor", "Árbol es mejor")))
+```
+
+### Interpretación final
+
+La tabla y gráficos anteriores permiten extraer las siguientes conclusiones:
+
+- **Naive Bayes** obtiene el peor desempeño en regresión, lo cual es esperado: al ser un clasificador, pierde toda la continuidad del precio y solo puede predecir tres valores distintos. Su inclusión aquí es solo para comparación formal con entregas previas.
+
+- **KNN vs Regresión Lineal:** La regresión lineal es competitiva porque asume una relación lineal entre features y precio. KNN puede capturar relaciones no lineales, pero requiere datos densos en el espacio de características para hacerlo bien. La diferencia entre ambos indica `r ifelse(rmse_test < rmse_lm, "que KNN captura mejor la estructura no lineal del mercado de precios.", "que la relación precio-features tiene componentes mayormente lineales en este dataset.")`.
+
+- **KNN vs Árbol de Regresión:** El árbol también captura no linealidades, pero lo hace mediante particiones binarias discretas. `r ifelse(rmse_test < rmse_arbol, "KNN supera al árbol, posiblemente porque interpola de forma más suave entre observaciones similares.", "El árbol supera a KNN, sugiriendo que las reglas de negocio (umbrales en variables como 'accommodates' o 'bedrooms') explican el precio mejor que la similitud por distancia.")`.
+
+- **Modelo recomendado hasta ahora:** `r mejor_modelo` con RMSE de $`r round(min(comparacion$RMSE), 2)` y R² de `r round(comparacion$R2[which.min(comparacion$RMSE)], 3)`. Este será el benchmark a superar en la siguiente etapa con validación cruzada y tuning de hiperparámetros.
+
+```{r guardar-comparacion}
+# Exportar para uso en integración final
+save(
+  comparacion,
+  modelo_lm, pred_lm, rmse_lm, mae_lm, r2_lm,
+  modelo_arbol, pred_arbol, rmse_arbol, mae_arbol, r2_arbol,
+  modelo_nb, pred_nb_num, rmse_nb, mae_nb, r2_nb,
+  q33, q67, med_barata, med_media, med_cara,
+  file = "knn_comparacion_resultados.RData"
+)
+
+cat("Objetos exportados a: knn_comparacion_resultados.RData\n")
+cat("(Integrante C: puede cargar este archivo para la integración final)\n")
+```
+
+---
+
+*Análisis realizado por Integrante B – SmartStay Advisors | CC3074 Minería de Datos – Semestre I 2026*
