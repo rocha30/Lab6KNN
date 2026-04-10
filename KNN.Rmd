@@ -1,6 +1,6 @@
 ---
 title: "SmartStay Advisors – Predicción de Precios con K-Nearest Neighbors"
-author: "Integrante A"
+author: "Equipo SmartStay Advisors"
 date: "`r Sys.Date()`"
 output:
   html_document:
@@ -431,7 +431,7 @@ La diferencia entre las métricas de entrenamiento y prueba sugiere `r ifelse(ab
 ---
 
 ```{r guardar-objetos}
-# Exportar objetos para uso de los demás integrantes
+# Exportar objetos para reutilización en secciones posteriores
 save(
   train_raw, test_raw,
   X_train_norm, X_test_norm,
@@ -444,18 +444,18 @@ save(
 )
 
 cat("Objetos exportados a: knn_regresion_resultados.RData\n")
-cat("(Integrantes B y C: carguen este archivo para asegurar el mismo split)\n")
+cat("(Cargar este archivo para asegurar el mismo split en todo el análisis)\n")
 ```
 
 ---
 
-*Análisis realizado por Integrante A – SmartStay Advisors | CC3074 Minería de Datos – Semestre I 2026*
+
 
 ---
 
-# Integrante B – Evaluación y Comparación de Modelos
+# Evaluación y Comparación de Modelos
 
-## Preparación del entorno (Integrante B)
+## Preparación del entorno
 
 ```{r setup-b}
 # Paquetes adicionales para los modelos de comparación
@@ -469,11 +469,11 @@ library(e1071)
 ```
 
 ```{r cargar-resultados-a}
-# Cargar objetos generados por el Integrante A
+# Cargar objetos generados en la sección previa
 # Esto garantiza el mismo split train/test en todos los modelos
 load("knn_regresion_resultados.RData")
 
-cat("Objetos disponibles del Integrante A:\n")
+cat("Objetos disponibles de la sección previa:\n")
 cat(sprintf("  - Train: %d observaciones\n", nrow(train_raw)))
 cat(sprintf("  - Test : %d observaciones\n", nrow(test_raw)))
 cat(sprintf("  - KNN k óptimo: %d\n", k_optimo))
@@ -561,7 +561,7 @@ resumen_rangos %>%
 
 ## Modelos de comparación
 
-Para una comparación justa, todos los modelos se entrenan con `train_raw` y se evalúan sobre `test_raw`, el mismo split usado por el Integrante A.
+Para una comparación justa, todos los modelos se entrenan con `train_raw` y se evalúan sobre `test_raw`, usando exactamente el mismo split base.
 
 ### Regresión Lineal
 
@@ -837,9 +837,288 @@ save(
 )
 
 cat("Objetos exportados a: knn_comparacion_resultados.RData\n")
-cat("(Integrante C: puede cargar este archivo para la integración final)\n")
+cat("(Este archivo puede cargarse para la integración final)\n")
 ```
 
 ---
 
-*Análisis realizado por Integrante B – SmartStay Advisors | CC3074 Minería de Datos – Semestre I 2026*
+
+
+---
+
+# KNN Clasificación + Evaluación
+
+## Preparación del entorno
+
+```{r setup-c}
+# Paquetes para clasificación y métricas
+paquetes_c <- c("class")
+faltantes_c <- paquetes_c[!paquetes_c %in% installed.packages()[, "Package"]]
+if (length(faltantes_c) > 0) install.packages(faltantes_c)
+
+library(class)
+
+# Cargar split y objetos base del análisis
+load("knn_regresion_resultados.RData")
+
+cat("Split cargado correctamente para clasificación:\n")
+cat(sprintf("  - Train: %d observaciones\n", nrow(train_raw)))
+cat(sprintf("  - Test : %d observaciones\n", nrow(test_raw)))
+```
+
+---
+
+## 1) Variable categórica de precio (barata, media, cara)
+
+Para evitar fuga de información, los puntos de corte se calculan **solo** con el conjunto de entrenamiento usando terciles. Luego se aplican esos mismos cortes al conjunto de prueba.
+
+```{r crear-categoria-precio}
+# Definir terciles en TRAIN (criterio solicitado)
+q33_c <- quantile(train_raw$price, probs = 1/3, na.rm = TRUE)
+q67_c <- quantile(train_raw$price, probs = 2/3, na.rm = TRUE)
+
+# Crear variable categórica en train y test con los mismos umbrales
+train_cls <- train_raw %>%
+  mutate(
+    price_cat = cut(
+      price,
+      breaks = c(-Inf, q33_c, q67_c, Inf),
+      labels = c("barata", "media", "cara"),
+      include.lowest = TRUE,
+      right = TRUE
+    )
+  )
+
+test_cls <- test_raw %>%
+  mutate(
+    price_cat = cut(
+      price,
+      breaks = c(-Inf, q33_c, q67_c, Inf),
+      labels = c("barata", "media", "cara"),
+      include.lowest = TRUE,
+      right = TRUE
+    )
+  )
+
+cat("Criterio de categorización (terciles en train):\n")
+cat(sprintf("  - barata: price <= $%.2f\n", q33_c))
+cat(sprintf("  - media : $%.2f < price <= $%.2f\n", q33_c, q67_c))
+cat(sprintf("  - cara  : price > $%.2f\n", q67_c))
+```
+
+```{r distribucion-clases}
+# Verificar balance de clases
+dist_train <- prop.table(table(train_cls$price_cat))
+dist_test  <- prop.table(table(test_cls$price_cat))
+
+balance_df <- data.frame(
+  Clase = rep(c("barata", "media", "cara"), 2),
+  Conjunto = rep(c("Train", "Test"), each = 3),
+  Proporcion = c(as.numeric(dist_train), as.numeric(dist_test))
+)
+
+balance_df %>%
+  mutate(Proporcion = round(Proporcion * 100, 2)) %>%
+  kable(
+    col.names = c("Clase", "Conjunto", "Proporción (%)"),
+    caption = "Distribución de clases por conjunto"
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+---
+
+## 2) Implementación de KNN clasificación
+
+Se reutilizan las variables normalizadas (`X_train_norm`, `X_test_norm`) para mantener consistencia y comparabilidad.
+
+```{r seleccionar-k-clasificacion}
+# Etiquetas objetivo
+y_train_cls <- train_cls$price_cat
+y_test_cls  <- test_cls$price_cat
+
+# Búsqueda simple de K óptimo con accuracy sobre train
+k_grid_cls <- seq(3, 31, by = 2)
+acc_train_k <- numeric(length(k_grid_cls))
+
+for (i in seq_along(k_grid_cls)) {
+  pred_train_cls <- knn(
+    train = X_train_norm,
+    test = X_train_norm,
+    cl = y_train_cls,
+    k = k_grid_cls[i]
+  )
+  acc_train_k[i] <- mean(pred_train_cls == y_train_cls)
+}
+
+res_k_cls <- data.frame(K = k_grid_cls, Accuracy_train = acc_train_k)
+k_opt_cls <- res_k_cls$K[which.max(res_k_cls$Accuracy_train)]
+
+cat(sprintf("K óptimo para clasificación (según accuracy train): %d\n", k_opt_cls))
+```
+
+```{r grafico-k-clasificacion, fig.cap="Accuracy en train según K (clasificación)"}
+ggplot(res_k_cls, aes(x = K, y = Accuracy_train)) +
+  geom_line(color = "#1f77b4", linewidth = 1.1) +
+  geom_point(color = "#0d3b66", size = 2.3) +
+  geom_vline(xintercept = k_opt_cls, linetype = "dashed", color = "#e74c3c") +
+  labs(
+    title = "Selección de K para KNN Clasificación",
+    subtitle = "Línea roja: K seleccionado",
+    x = "K",
+    y = "Accuracy en train"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+---
+
+## 3) Predicción sobre test set
+
+```{r prediccion-clasificacion-test}
+pred_test_cls <- knn(
+  train = X_train_norm,
+  test  = X_test_norm,
+  cl    = y_train_cls,
+  k     = k_opt_cls
+)
+
+head(data.frame(
+  Real = y_test_cls,
+  Predicho = pred_test_cls
+), 10) %>%
+  kable(caption = "Primeras 10 predicciones de clasificación (test)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+---
+
+## 4) Evaluación del modelo (Accuracy, Precision, Recall)
+
+```{r metricas-clasificacion}
+cm <- confusionMatrix(
+  data = pred_test_cls,
+  reference = y_test_cls
+)
+
+accuracy_cls <- as.numeric(cm$overall["Accuracy"])
+
+# Métricas por clase: precision y recall
+metricas_por_clase <- as.data.frame(cm$byClass)
+metricas_por_clase$Clase <- rownames(metricas_por_clase)
+
+metricas_resumen <- metricas_por_clase %>%
+  transmute(
+    Clase,
+    Precision = round(`Pos Pred Value`, 4),
+    Recall = round(Sensitivity, 4),
+    F1 = round((2 * Precision * Recall) / pmax(Precision + Recall, .Machine$double.eps), 4)
+  )
+
+cat(sprintf("Accuracy en test: %.4f\n", accuracy_cls))
+
+metricas_resumen %>%
+  kable(caption = "Precision, Recall y F1 por clase (test)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+```{r matriz-confusion, fig.cap="Matriz de confusión KNN clasificación (test)", fig.height=5, fig.width=6}
+cm_df <- as.data.frame(cm$table)
+
+ggplot(cm_df, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), color = "white", fontface = "bold", size = 4.5) +
+  scale_fill_gradient(low = "#74c69d", high = "#1b4332") +
+  labs(
+    title = "Matriz de Confusión – KNN Clasificación",
+    subtitle = sprintf("Accuracy test = %.3f | K = %d", accuracy_cls, k_opt_cls),
+    x = "Clase real",
+    y = "Clase predicha"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+---
+
+## 5) Análisis de resultados
+
+```{r analisis-fallas}
+# Errores por clase real (dónde falla más)
+errores_por_clase <- data.frame(
+  Clase_real = rownames(cm$table),
+  Total = rowSums(cm$table),
+  Aciertos = diag(cm$table),
+  Errores = rowSums(cm$table) - diag(cm$table)
+) %>%
+  mutate(
+    Error_pct = round(100 * Errores / pmax(Total, 1), 2)
+  )
+
+errores_por_clase %>%
+  kable(
+    col.names = c("Clase real", "Total", "Aciertos", "Errores", "Error (%)"),
+    caption = "¿Dónde falla más el modelo?"
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+
+clase_mas_dificil <- errores_por_clase$Clase_real[which.max(errores_por_clase$Error_pct)]
+error_max <- max(errores_por_clase$Error_pct)
+
+cat(sprintf("\nClase con mayor tasa de error: %s (%.2f%%)\n", clase_mas_dificil, error_max))
+
+# Diagnóstico simple de desbalance
+props_train <- prop.table(table(y_train_cls))
+ratio_max_min <- max(props_train) / min(props_train)
+
+cat(sprintf("Ratio clase mayoritaria/minoritaria en train: %.2f\n", ratio_max_min))
+cat(sprintf("Diagnóstico de balance: %s\n",
+            ifelse(ratio_max_min > 1.5,
+                   "Hay desbalance moderado/alto de clases.",
+                   "No se observa desbalance fuerte de clases.")))
+```
+
+### Interpretación inicial
+
+- El modelo KNN de clasificación alcanza un **accuracy de `r round(accuracy_cls, 3)`** en el conjunto de prueba.
+- La clase con mayor dificultad de predicción es **`r clase_mas_dificil`**, donde se concentra la mayor tasa de error.
+- El desempeño por clase (precision/recall) sugiere que `r ifelse(max(metricas_resumen$Recall) - min(metricas_resumen$Recall) > 0.15, "el modelo no es homogéneo entre clases y necesita ajuste de K o variables.", "el modelo mantiene un comportamiento relativamente estable entre clases.")`
+- Sobre desbalance: `r ifelse(ratio_max_min > 1.5, "hay evidencia de clases desbalanceadas, lo que puede sesgar predicciones hacia la clase mayoritaria.", "las clases están razonablemente balanceadas, con impacto limitado en el clasificador.")`
+
+```{r guardar-resultados-c}
+save(
+  train_cls, test_cls,
+  q33_c, q67_c,
+  y_train_cls, y_test_cls,
+  k_opt_cls, pred_test_cls,
+  cm, accuracy_cls, metricas_resumen, errores_por_clase,
+  file = "knn_clasificacion_resultados.RData"
+)
+
+cat("Objetos exportados a: knn_clasificacion_resultados.RData\n")
+```
+
+---
+
+# Integración Final (Todos)
+
+## Checklist de integración
+
+```{r integracion-checklist, results='asis'}
+cat("- Unificar nombres de objetos entre secciones: train_raw, test_raw, X_train_norm, X_test_norm.\n")
+cat("- Mantener formato de tablas con kable + kableExtra.\n")
+cat("- Usar misma paleta visual en gráficos comparativos.\n")
+cat("- Consolidar conclusiones en tono consultoría (hallazgo -> implicación -> recomendación).\n")
+cat("- Evitar subtítulos que copien literalmente los enunciados del laboratorio.\n")
+```
+
+## Guion recomendado de redacción conjunta
+
+1. Introducción: problema de negocio y objetivo predictivo.
+2. Metodología: limpieza, split, normalización y construcción de modelos.
+3. Resultados: desempeño de regresión y clasificación en test.
+4. Hallazgos: sesgos, clases difíciles y limitaciones.
+5. Recomendaciones: tuning de hiperparámetros y validación cruzada para la entrega final.
+
+---
+
+
