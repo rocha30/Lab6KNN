@@ -1,0 +1,452 @@
+---
+title: "SmartStay Advisors – Predicción de Precios con K-Nearest Neighbors"
+author: "Integrante A"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    df_print: paged
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  fig.width = 8,
+  fig.height = 5
+)
+
+# Instalar paquetes faltantes automáticamente
+paquetes <- c("tidyverse", "ggplot2", "knitr", "kableExtra",
+              "caret", "FNN", "Metrics")
+faltantes <- paquetes[!paquetes %in% installed.packages()[, "Package"]]
+if (length(faltantes) > 0) install.packages(faltantes)
+```
+
+
+
+## Preparación del entorno
+
+```{r librerias}
+# Manipulación y visualización
+library(tidyverse)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+
+# Modelado KNN y evaluación
+library(caret)
+library(FNN)       # KNN regresión rápida
+library(Metrics)   # rmse, mae
+
+# Reproducibilidad
+set.seed(123)
+```
+
+---
+
+## Carga y limpieza de datos
+
+```{r carga-datos}
+# Cargar el dataset de entregas anteriores
+load("listings.RData")
+
+# Verificar nombre del objeto cargado
+ls()
+```
+
+```{r explorar-estructura}
+# Inspección general
+glimpse(listings)
+```
+
+```{r limpieza}
+# Limpiar columna precio: remover "$" y "," y convertir a numérico
+listings <- listings %>%
+  mutate(
+    price = as.numeric(gsub("[$,]", "", price))
+  )
+
+# Seleccionar variables relevantes para el modelo
+# Variables numéricas con sentido para predecir precio
+vars_modelo <- c(
+  "price",
+  "accommodates",
+  "bedrooms",
+  "bathrooms",
+  "beds",
+  "minimum_nights",
+  "number_of_reviews",
+  "review_scores_rating",
+  "calculated_host_listings_count",
+  "availability_365"
+)
+
+# Verificar cuáles existen en el dataset
+vars_disponibles <- intersect(vars_modelo, colnames(listings))
+cat("Variables disponibles para el modelo:\n")
+print(vars_disponibles)
+
+# Subconjunto limpio: solo variables del modelo, sin NA
+df_modelo <- listings %>%
+  select(all_of(vars_disponibles)) %>%
+  drop_na()
+
+cat(sprintf("\nObservaciones después de limpiar NA: %d\n", nrow(df_modelo)))
+```
+
+```{r resumen-precio}
+# Distribución de la variable respuesta
+summary(df_modelo$price)
+
+# Filtrar outliers extremos (precios fuera del rango razonable)
+q_low  <- quantile(df_modelo$price, 0.01)
+q_high <- quantile(df_modelo$price, 0.99)
+
+df_modelo <- df_modelo %>%
+  filter(price >= q_low, price <= q_high)
+
+cat(sprintf("Observaciones tras filtrar outliers (P1–P99): %d\n", nrow(df_modelo)))
+```
+
+```{r histograma-precio, fig.cap="Distribución del precio de renta por noche"}
+ggplot(df_modelo, aes(x = price)) +
+  geom_histogram(bins = 50, fill = "#2c7bb6", color = "white", alpha = 0.85) +
+  labs(
+    title = "Distribución del Precio de Renta por Noche",
+    subtitle = "Dataset SmartStay Advisors – listings.RData",
+    x = "Precio (USD)",
+    y = "Frecuencia"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+---
+
+## División train/test (mismo split que entregas anteriores)
+
+Para garantizar comparabilidad con los modelos de Regresión Lineal, Árbol de Regresión y Naive Bayes construidos en entregas previas, se replica exactamente la misma semilla y proporción de división (80/20).
+
+```{r split-train-test}
+# CRÍTICO: misma semilla y proporción que entregas anteriores
+set.seed(123)
+
+indice_train <- createDataPartition(
+  y = df_modelo$price,
+  p = 0.80,
+  list = FALSE
+)
+
+train_raw <- df_modelo[ indice_train, ]
+test_raw  <- df_modelo[-indice_train, ]
+
+cat(sprintf("Train: %d observaciones | Test: %d observaciones\n",
+            nrow(train_raw), nrow(test_raw)))
+cat(sprintf("Precio promedio train: $%.2f | test: $%.2f\n",
+            mean(train_raw$price), mean(test_raw$price)))
+```
+
+---
+
+## Normalización de variables (min-max)
+
+KNN basa sus predicciones en distancias entre observaciones. Si las variables tienen escalas muy distintas (ej.: `accommodates` va de 1–16 pero `number_of_reviews` puede llegar a 600+), las variables de mayor magnitud dominarán el cálculo de distancia de forma artificial. Por eso **normalizar es un paso crítico y no opcional**.
+
+Se aplica normalización Min-Max usando únicamente los parámetros del conjunto de entrenamiento, y luego esos mismos parámetros se aplican al conjunto de prueba para evitar *data leakage*.
+
+```{r normalizacion}
+# Separar la variable respuesta
+y_train <- train_raw$price
+y_test  <- test_raw$price
+
+# Features (todo excepto price)
+X_train_raw <- train_raw %>% select(-price)
+X_test_raw  <- test_raw  %>% select(-price)
+
+# Calcular parámetros Min-Max SOLO sobre train
+preproc_params <- preProcess(X_train_raw, method = c("range"))
+
+# Aplicar la misma transformación a train y test
+X_train_norm <- predict(preproc_params, X_train_raw)
+X_test_norm  <- predict(preproc_params, X_test_raw)
+
+# Verificar rango: todo debe estar entre 0 y 1
+apply(X_train_norm, 2, range) %>%
+  t() %>%
+  as.data.frame() %>%
+  setNames(c("Min", "Max")) %>%
+  kable(caption = "Rango de variables normalizadas (train)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+---
+
+## Cómo funciona KNN en regresión
+
+KNN (K-Nearest Neighbors) es un algoritmo de aprendizaje supervisado no paramétrico. En su versión de **regresión**, para predecir el precio de una propiedad nueva:
+
+1. Calcula la **distancia euclidiana** entre esa propiedad y todas las del conjunto de entrenamiento (usando las variables normalizadas).
+2. Identifica los **K vecinos más cercanos** (las K propiedades más similares).
+3. Calcula el **promedio del precio** de esos K vecinos como predicción.
+
+El hiperparámetro **K** controla el balance entre sesgo y varianza:
+- K pequeño → modelo flexible, puede sobreajustarse
+- K grande → modelo suavizado, puede subajustarse
+
+Para la selección inicial de K se utiliza la heurística `K ≈ √n` como punto de partida, y luego se valida con RMSE en entrenamiento.
+
+```{r seleccion-k-inicial}
+# Heurística: K inicial ≈ sqrt(n_train)
+k_heuristica <- round(sqrt(nrow(X_train_norm)))
+cat(sprintf("K heurístico (√%d): %d\n", nrow(X_train_norm), k_heuristica))
+
+# Si k es par, hacerlo impar para evitar empates (buena práctica)
+if (k_heuristica %% 2 == 0) k_heuristica <- k_heuristica + 1
+cat(sprintf("K ajustado (impar): %d\n", k_heuristica))
+```
+
+```{r busqueda-k-optimo}
+# Probar varios valores de K y evaluar RMSE en train con CV simple
+k_valores <- seq(3, 31, by = 2)  # solo impares
+rmse_k    <- numeric(length(k_valores))
+
+for (i in seq_along(k_valores)) {
+  pred_train_cv <- knn.reg(
+    train = X_train_norm,
+    test  = X_train_norm,
+    y     = y_train,
+    k     = k_valores[i]
+  )$pred
+
+  rmse_k[i] <- rmse(y_train, pred_train_cv)
+}
+
+resultados_k <- data.frame(K = k_valores, RMSE_train = round(rmse_k, 4))
+
+# Graficar curva de error
+ggplot(resultados_k, aes(x = K, y = RMSE_train)) +
+  geom_line(color = "#e74c3c", linewidth = 1.2) +
+  geom_point(color = "#c0392b", size = 2.5) +
+  geom_vline(
+    xintercept = k_valores[which.min(rmse_k)],
+    linetype = "dashed", color = "#2c7bb6"
+  ) +
+  labs(
+    title = "Selección de K: RMSE en Entrenamiento",
+    subtitle = "La línea azul indica el K con menor error",
+    x = "Valor de K",
+    y = "RMSE (USD)"
+  ) +
+  theme_minimal(base_size = 13)
+
+k_optimo <- k_valores[which.min(rmse_k)]
+cat(sprintf("\nK óptimo seleccionado: %d (RMSE train = $%.2f)\n",
+            k_optimo, min(rmse_k)))
+```
+
+---
+
+## Entrenamiento del modelo KNN de regresión
+
+```{r modelo-knn}
+# Entrenar KNN con el K óptimo identificado
+modelo_knn_reg <- knn.reg(
+  train = X_train_norm,
+  test  = X_train_norm,   # predicciones sobre train primero
+  y     = y_train,
+  k     = k_optimo
+)
+
+pred_train <- modelo_knn_reg$pred
+
+# Métricas en entrenamiento (referencia interna)
+rmse_train <- rmse(y_train, pred_train)
+mae_train  <- mae(y_train,  pred_train)
+r2_train   <- cor(y_train,  pred_train)^2
+
+cat("--- Métricas en Entrenamiento (referencia) ---\n")
+cat(sprintf("RMSE : $%.4f\n", rmse_train))
+cat(sprintf("MAE  : $%.4f\n", mae_train))
+cat(sprintf("R²   : %.4f\n",  r2_train))
+```
+
+---
+
+## Predicción sobre el conjunto de prueba
+
+```{r prediccion-test}
+# Predecir sobre test set (datos no vistos durante el entrenamiento)
+pred_test_obj <- knn.reg(
+  train = X_train_norm,
+  test  = X_test_norm,
+  y     = y_train,
+  k     = k_optimo
+)
+
+pred_test <- pred_test_obj$pred
+
+# Primeras predicciones vs valores reales
+head(data.frame(
+  Real     = round(y_test, 2),
+  Predicho = round(pred_test, 2),
+  Error    = round(y_test - pred_test, 2)
+), 10) %>%
+  kable(caption = "Primeras 10 predicciones vs valores reales (test set)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+---
+
+## Evaluación del modelo en el conjunto de prueba
+
+Esta sección responde directamente a la pregunta central: **¿qué tan bien predice el modelo KNN en datos que nunca vio durante el entrenamiento?**
+
+```{r metricas-test}
+# Calcular métricas en TEST SET
+rmse_test <- rmse(y_test, pred_test)
+mae_test  <- mae(y_test,  pred_test)
+r2_test   <- cor(y_test,  pred_test)^2
+
+# Tabla resumen
+metricas_df <- data.frame(
+  Conjunto   = c("Entrenamiento", "Prueba (Test)"),
+  RMSE       = round(c(rmse_train, rmse_test), 4),
+  MAE        = round(c(mae_train,  mae_test),  4),
+  R2         = round(c(r2_train,   r2_test),   4)
+)
+
+metricas_df %>%
+  kable(
+    col.names = c("Conjunto", "RMSE (USD)", "MAE (USD)", "R²"),
+    caption   = "Desempeño del modelo KNN de regresión (K = óptimo)"
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  row_spec(2, bold = TRUE, background = "#eaf4fb")
+```
+
+### Interpretación de las métricas
+
+- **RMSE (Root Mean Squared Error):** Penaliza errores grandes. Un RMSE de `r round(rmse_test, 2)` USD indica que, en promedio, las predicciones se desvían `r round(rmse_test, 2)` dólares del precio real en el conjunto de prueba.
+
+- **MAE (Mean Absolute Error):** Error absoluto promedio de `r round(mae_test, 2)` USD. Más robusto a outliers que el RMSE.
+
+- **R² (Coeficiente de determinación):** El modelo explica el `r round(r2_test * 100, 1)`% de la varianza del precio en datos no vistos. `r ifelse(r2_test > 0.6, "Esto indica un ajuste razonablemente bueno.", ifelse(r2_test > 0.4, "El ajuste es moderado, con margen de mejora.", "El ajuste es limitado; puede mejorar con tuning o más features."))`
+
+```{r grafico-real-vs-predicho, fig.cap="Valores reales vs predichos – KNN Regresión (test set)"}
+df_resultados <- data.frame(
+  Real     = y_test,
+  Predicho = pred_test
+)
+
+ggplot(df_resultados, aes(x = Real, y = Predicho)) +
+  geom_point(alpha = 0.35, color = "#2c7bb6", size = 1.8) +
+  geom_abline(slope = 1, intercept = 0,
+              color = "#e74c3c", linetype = "dashed", linewidth = 1.1) +
+  labs(
+    title    = "Real vs Predicho – KNN Regresión (Test Set)",
+    subtitle = sprintf("K = %d  |  R² = %.3f  |  RMSE = $%.2f", k_optimo, r2_test, rmse_test),
+    x = "Precio Real (USD)",
+    y = "Precio Predicho (USD)"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+```{r grafico-residuos, fig.cap="Distribución de residuos en el test set"}
+df_resultados <- df_resultados %>%
+  mutate(Residuo = Real - Predicho)
+
+ggplot(df_resultados, aes(x = Residuo)) +
+  geom_histogram(bins = 50, fill = "#27ae60", color = "white", alpha = 0.85) +
+  geom_vline(xintercept = 0, color = "#e74c3c", linetype = "dashed", linewidth = 1) +
+  labs(
+    title    = "Distribución de Residuos – KNN Regresión",
+    subtitle = "Residuo = Precio Real − Precio Predicho",
+    x = "Residuo (USD)",
+    y = "Frecuencia"
+  ) +
+  theme_minimal(base_size = 13)
+
+cat(sprintf("Residuo promedio: $%.4f (sesgo del modelo)\n", mean(df_resultados$Residuo)))
+cat(sprintf("¿Sobreestima o subestima?\n%s\n",
+    ifelse(mean(df_resultados$Residuo) > 0,
+           "El modelo tiende a SUBESTIMAR los precios reales.",
+           "El modelo tiende a SOBREESTIMAR los precios reales.")))
+```
+
+---
+
+## Decisiones metodológicas documentadas
+
+```{r tabla-decisiones}
+decisiones <- data.frame(
+  Decisión       = c(
+    "K seleccionado",
+    "Método de normalización",
+    "Split train/test",
+    "Filtro de outliers",
+    "Métrica de distancia",
+    "Variables utilizadas"
+  ),
+  Valor          = c(
+    as.character(k_optimo),
+    "Min-Max (rango [0,1])",
+    "80% train / 20% test (set.seed = 123)",
+    "Percentiles 1%–99% del precio",
+    "Euclidiana (default FNN)",
+    paste(setdiff(vars_disponibles, "price"), collapse = ", ")
+  ),
+  Justificación  = c(
+    "Mínimo RMSE en barrido K = {3,5,...,31}; ajustado a impar",
+    "Obligatorio en KNN: evita dominancia por escala",
+    "Idéntico a entregas anteriores para comparación válida",
+    "Elimina precios no representativos del mercado típico",
+    "Estándar para variables continuas normalizadas",
+    "Variables numéricas relevantes del negocio; sin leakage"
+  )
+)
+
+decisiones %>%
+  kable(caption = "Registro de decisiones metodológicas") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = TRUE) %>%
+  column_spec(1, bold = TRUE, width = "18%") %>%
+  column_spec(2, width = "28%") %>%
+  column_spec(3, width = "54%")
+```
+
+---
+
+## Conclusiones parciales
+
+El modelo KNN de regresión logró un **R² de `r round(r2_test, 3)`** y un **RMSE de $`r round(rmse_test, 2)`** en el conjunto de prueba, lo que indica `r ifelse(r2_test > 0.55, "una capacidad predictiva sólida", "una capacidad predictiva moderada")` para estimar precios de propiedades Airbnb a partir de sus características físicas y de disponibilidad.
+
+La diferencia entre las métricas de entrenamiento y prueba sugiere `r ifelse(abs(rmse_train - rmse_test) / rmse_test < 0.10, "un buen nivel de generalización sin señales de sobreajuste significativo.", ifelse(rmse_test > rmse_train * 1.15, "cierta tendencia al sobreajuste que puede mitigarse aumentando K o reduciendo features.", "un ajuste razonable con leve degradación esperada al generalizar."))` En entregas siguientes se complementará este análisis con validación cruzada y búsqueda de hiperparámetros más exhaustiva (Actividades 7–9).
+
+---
+
+```{r guardar-objetos}
+# Exportar objetos para uso de los demás integrantes
+save(
+  train_raw, test_raw,
+  X_train_norm, X_test_norm,
+  y_train, y_test,
+  preproc_params,
+  modelo_knn_reg, pred_test,
+  k_optimo,
+  rmse_test, mae_test, r2_test,
+  file = "knn_regresion_resultados.RData"
+)
+
+cat("Objetos exportados a: knn_regresion_resultados.RData\n")
+cat("(Integrantes B y C: carguen este archivo para asegurar el mismo split)\n")
+```
+
+---
+
+*Análisis realizado por Integrante A – SmartStay Advisors | CC3074 Minería de Datos – Semestre I 2026*
