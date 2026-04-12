@@ -1,4 +1,4 @@
----
+﻿---
 title: "SmartStay Advisors – Predicción de Precios con K-Nearest Neighbors"
 author: "Equipo SmartStay Advisors"
 date: "`r Sys.Date()`"
@@ -1043,12 +1043,12 @@ ggplot(cm_df, aes(x = Reference, y = Prediction, fill = Freq)) +
 ## 5) Análisis de resultados
 
 ```{r analisis-fallas}
-# Errores por clase real (dónde falla más)
+# Errores por clase real (usar columnas, porque Reference = clase real)
 errores_por_clase <- data.frame(
-  Clase_real = rownames(cm$table),
-  Total = rowSums(cm$table),
+  Clase_real = colnames(cm$table),
+  Total = colSums(cm$table),
   Aciertos = diag(cm$table),
-  Errores = rowSums(cm$table) - diag(cm$table)
+  Errores = colSums(cm$table) - diag(cm$table)
 ) %>%
   mutate(
     Error_pct = round(100 * Errores / pmax(Total, 1), 2)
@@ -1057,7 +1057,7 @@ errores_por_clase <- data.frame(
 errores_por_clase %>%
   kable(
     col.names = c("Clase real", "Total", "Aciertos", "Errores", "Error (%)"),
-    caption = "¿Dónde falla más el modelo?"
+    caption = "¿Donde falla mas el modelo?"
   ) %>%
   kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
 
@@ -1066,23 +1066,229 @@ error_max <- max(errores_por_clase$Error_pct)
 
 cat(sprintf("\nClase con mayor tasa de error: %s (%.2f%%)\n", clase_mas_dificil, error_max))
 
-# Diagnóstico simple de desbalance
+# Diagnostico simple de desbalance
 props_train <- prop.table(table(y_train_cls))
 ratio_max_min <- max(props_train) / min(props_train)
 
 cat(sprintf("Ratio clase mayoritaria/minoritaria en train: %.2f\n", ratio_max_min))
-cat(sprintf("Diagnóstico de balance: %s\n",
+cat(sprintf("Diagnostico de balance: %s\n",
             ifelse(ratio_max_min > 1.5,
                    "Hay desbalance moderado/alto de clases.",
                    "No se observa desbalance fuerte de clases.")))
 ```
 
-### Interpretación inicial
+### Interpretacion inicial
 
-- El modelo KNN de clasificación alcanza un **accuracy de `r round(accuracy_cls, 3)`** en el conjunto de prueba.
-- La clase con mayor dificultad de predicción es **`r clase_mas_dificil`**, donde se concentra la mayor tasa de error.
-- El desempeño por clase (precision/recall) sugiere que `r ifelse(max(metricas_resumen$Recall) - min(metricas_resumen$Recall) > 0.15, "el modelo no es homogéneo entre clases y necesita ajuste de K o variables.", "el modelo mantiene un comportamiento relativamente estable entre clases.")`
-- Sobre desbalance: `r ifelse(ratio_max_min > 1.5, "hay evidencia de clases desbalanceadas, lo que puede sesgar predicciones hacia la clase mayoritaria.", "las clases están razonablemente balanceadas, con impacto limitado en el clasificador.")`
+- El modelo KNN de clasificacion alcanza un **accuracy de `r round(accuracy_cls, 3)`** en el conjunto de prueba.
+- La clase con mayor dificultad de prediccion es **`r clase_mas_dificil`**, donde se concentra la mayor tasa de error.
+- El desempeño por clase (precision/recall) sugiere que `r ifelse(max(metricas_resumen$Recall) - min(metricas_resumen$Recall) > 0.15, "el modelo no es homogeneo entre clases y necesita ajuste de K o variables.", "el modelo mantiene un comportamiento relativamente estable entre clases.")`
+- Sobre desbalance: `r ifelse(ratio_max_min > 1.5, "hay evidencia de clases desbalanceadas, lo que puede sesgar predicciones hacia la clase mayoritaria.", "las clases estan razonablemente balanceadas, con impacto limitado en el clasificador.")`
+
+---
+
+## Eficiencia multiclase y generalizacion
+
+```{r metricas-multiclase-completas}
+# Prediccion en train con el K final (estimacion optimista al incluir autovecino)
+pred_train_cls <- knn(
+  train = X_train_norm,
+  test  = X_train_norm,
+  cl    = y_train_cls,
+  k     = k_opt_cls
+)
+
+cm_train_cls <- confusionMatrix(pred_train_cls, y_train_cls)
+cm_test_cls  <- cm
+
+# Funcion para obtener metricas por clase + promedios macro y weighted
+metricas_multiclase <- function(cm_obj) {
+  byc <- as.data.frame(cm_obj$byClass)
+  byc$Clase <- sub("^Class: ", "", rownames(byc))
+
+  byc <- byc %>%
+    transmute(
+      Clase,
+      Precision = `Pos Pred Value`,
+      Recall = Sensitivity,
+      F1 = ifelse(
+        (`Pos Pred Value` + Sensitivity) == 0,
+        NA_real_,
+        2 * (`Pos Pred Value` * Sensitivity) / (`Pos Pred Value` + Sensitivity)
+      ),
+      Balanced_Acc_ovo = `Balanced Accuracy`
+    )
+
+  tabla <- as.matrix(cm_obj$table)
+  soporte <- colSums(tabla)
+  byc$Soporte <- as.numeric(soporte[byc$Clase])
+
+  macro <- byc %>%
+    summarise(
+      Clase = "Macro avg",
+      Precision = mean(Precision, na.rm = TRUE),
+      Recall = mean(Recall, na.rm = TRUE),
+      F1 = mean(F1, na.rm = TRUE),
+      Balanced_Acc_ovo = mean(Balanced_Acc_ovo, na.rm = TRUE),
+      Soporte = sum(Soporte)
+    )
+
+  weighted <- byc %>%
+    summarise(
+      Clase = "Weighted avg",
+      Precision = weighted.mean(Precision, Soporte, na.rm = TRUE),
+      Recall = weighted.mean(Recall, Soporte, na.rm = TRUE),
+      F1 = weighted.mean(F1, Soporte, na.rm = TRUE),
+      Balanced_Acc_ovo = weighted.mean(Balanced_Acc_ovo, Soporte, na.rm = TRUE),
+      Soporte = sum(Soporte)
+    )
+
+  bind_rows(byc, macro, weighted)
+}
+
+metricas_clase_train <- metricas_multiclase(cm_train_cls)
+metricas_clase_test  <- metricas_multiclase(cm_test_cls)
+
+metricas_globales_train_test <- bind_rows(
+  tibble(
+    Conjunto = "Train",
+    Accuracy = as.numeric(cm_train_cls$overall["Accuracy"]),
+    Kappa = as.numeric(cm_train_cls$overall["Kappa"]),
+    Balanced_Accuracy = metricas_clase_train$Recall[metricas_clase_train$Clase == "Macro avg"],
+    Macro_F1 = metricas_clase_train$F1[metricas_clase_train$Clase == "Macro avg"],
+    Weighted_F1 = metricas_clase_train$F1[metricas_clase_train$Clase == "Weighted avg"]
+  ),
+  tibble(
+    Conjunto = "Test",
+    Accuracy = as.numeric(cm_test_cls$overall["Accuracy"]),
+    Kappa = as.numeric(cm_test_cls$overall["Kappa"]),
+    Balanced_Accuracy = metricas_clase_test$Recall[metricas_clase_test$Clase == "Macro avg"],
+    Macro_F1 = metricas_clase_test$F1[metricas_clase_test$Clase == "Macro avg"],
+    Weighted_F1 = metricas_clase_test$F1[metricas_clase_test$Clase == "Weighted avg"]
+  )
+)
+
+print(
+  metricas_clase_test %>%
+    mutate(across(where(is.numeric), ~ round(., 4))) %>%
+    kable(
+      caption = "Metricas multiclase en test: por clase, macro avg y weighted avg",
+      col.names = c("Clase", "Precision", "Recall", "F1", "Balanced Accuracy (OvO)", "Soporte")
+    ) %>%
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+)
+
+print(
+  metricas_globales_train_test %>%
+    mutate(across(where(is.numeric), ~ round(., 4))) %>%
+    kable(
+      caption = "Comparacion global train vs test (KNN clasificacion)",
+      col.names = c("Conjunto", "Accuracy", "Kappa", "Balanced Accuracy", "Macro F1", "Weighted F1")
+    ) %>%
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+)
+```
+
+```{r confusiones-principales}
+# Pares de clases que mas se confunden en test
+cm_test_df <- as.data.frame(cm_test_cls$table)
+colnames(cm_test_df) <- c("Predicho", "Real", "Frecuencia")
+
+pares_confusion <- cm_test_df %>%
+  filter(Predicho != Real, Frecuencia > 0) %>%
+  mutate(Par_confusion = paste0(Real, " -> ", Predicho)) %>%
+  arrange(desc(Frecuencia))
+
+print(
+  pares_confusion %>%
+    select(Par_confusion, Frecuencia) %>%
+    kable(
+      caption = "Pares de clases mas confundidos en test",
+      col.names = c("Confusion (Real -> Predicho)", "Casos")
+    ) %>%
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+)
+
+errores_por_clase_test <- data.frame(
+  Clase_real = colnames(cm_test_cls$table),
+  Total = colSums(cm_test_cls$table),
+  Aciertos = diag(cm_test_cls$table),
+  Errores = colSums(cm_test_cls$table) - diag(cm_test_cls$table)
+) %>%
+  mutate(Error_pct = round(100 * Errores / pmax(Total, 1), 2))
+
+clase_mas_error <- errores_por_clase_test$Clase_real[which.max(errores_por_clase_test$Error_pct)]
+clase_menos_error <- errores_por_clase_test$Clase_real[which.min(errores_por_clase_test$Error_pct)]
+
+cat(sprintf("Clase con mayor error: %s (%.2f%%)\n", clase_mas_error, max(errores_por_clase_test$Error_pct)))
+cat(sprintf("Clase con menor error: %s (%.2f%%)\n", clase_menos_error, min(errores_por_clase_test$Error_pct)))
+```
+
+```{r train-vs-test-clasificacion, fig.cap="Comparacion de metricas de clasificacion entre train y test"}
+metricas_plot <- metricas_globales_train_test %>%
+  select(Conjunto, Accuracy, Balanced_Accuracy, Macro_F1, Weighted_F1) %>%
+  pivot_longer(
+    cols = c(Accuracy, Balanced_Accuracy, Macro_F1, Weighted_F1),
+    names_to = "Metrica",
+    values_to = "Valor"
+  )
+
+ggplot(metricas_plot, aes(x = Metrica, y = Valor, fill = Conjunto)) +
+  geom_col(position = position_dodge(width = 0.75), width = 0.65) +
+  geom_text(
+    aes(label = sprintf("%.3f", Valor)),
+    position = position_dodge(width = 0.75),
+    vjust = -0.25,
+    size = 3.1
+  ) +
+  scale_fill_manual(values = c("Train" = "#457b9d", "Test" = "#e76f51")) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(
+    title = "Train vs Test en metricas multiclase",
+    x = NULL,
+    y = "Valor de la metrica"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+```{r sobreajuste-clasificacion}
+# Validacion leave-one-out en train para reducir optimismo del train accuracy
+pred_train_loo_cls <- knn.cv(
+  train = X_train_norm,
+  cl    = y_train_cls,
+  k     = k_opt_cls
+)
+
+cm_train_loo_cls <- confusionMatrix(pred_train_loo_cls, y_train_cls)
+
+accuracy_train_cls <- as.numeric(cm_train_cls$overall["Accuracy"])
+accuracy_train_loo_cls <- as.numeric(cm_train_loo_cls$overall["Accuracy"])
+accuracy_test_cls <- as.numeric(cm_test_cls$overall["Accuracy"])
+
+comparacion_sobreajuste <- data.frame(
+  Escenario = c("Train (autovecino)", "Train LOO (knn.cv)", "Test"),
+  Accuracy = c(accuracy_train_cls, accuracy_train_loo_cls, accuracy_test_cls)
+)
+
+comparacion_sobreajuste %>%
+  mutate(Accuracy = round(Accuracy, 4)) %>%
+  kable(
+    caption = "Evidencia de generalizacion y riesgo de sobreajuste",
+    col.names = c("Escenario", "Accuracy")
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+### Interpretacion tecnica para SmartStay Advisors
+
+La matriz de confusion confirma que la mayor dificultad del modelo se concentra en la clase `media`, con un error significativamente mayor que en `barata` y `cara`. Las dos confusiones mas frecuentes son `media -> barata` y `media -> cara`, lo que sugiere que el modelo separa relativamente bien los extremos de precio, pero le cuesta ubicar con estabilidad las propiedades intermedias. En terminos operativos, esto es relevante porque las viviendas de segmento medio suelen actuar como frontera de decision comercial para ajustes de tarifa y priorizacion de inventario.
+
+Desde la perspectiva de negocio, no todos los errores tienen el mismo costo. Confundir una vivienda `cara` con `media` puede inducir ajustes de precio moderados y decisiones menos agresivas, mientras que confundir `cara` con `barata` puede llevar a subvaloraciones severas y perdida de ingreso potencial por noche. De manera simetrica, predecir una vivienda `barata` como `cara` puede sobredimensionar su posicionamiento y afectar conversion al fijar precios por encima de la disposicion real del mercado.
+
+Sobre sobreajuste, la comparacion directa de train vs test con autovecino muestra una brecha amplia (train mayor que test), esperable en KNN cuando se evalua entrenamiento sobre los mismos datos usados como vecinos y con un `k` pequeno (k = `r k_opt_cls`). Sin embargo, al usar `knn.cv` (LOO) el accuracy de train se alinea casi por completo con test, lo cual reduce la evidencia de sobreajuste severo y apunta mas bien a un problema de estimacion optimista en la metrica de entrenamiento inicial. En resumen, `k = 3` hace al modelo sensible a variacion local; funciona, pero conviene validar con esquemas de CV mas robustos y explorar valores de `k` ligeramente mayores para mejorar estabilidad en la clase media.
+
+### Texto formal para reporte
+
+El desempeno del clasificador KNN evidencia una capacidad predictiva moderada sobre el conjunto de prueba, con una exactitud global de `r round(metricas_globales_train_test$Accuracy[metricas_globales_train_test$Conjunto == "Test"], 3)` y un F1 macro de `r round(metricas_globales_train_test$Macro_F1[metricas_globales_train_test$Conjunto == "Test"], 3)`. El analisis de la matriz de confusion muestra que los errores se concentran principalmente en el segmento de precio medio, mientras que las categorias extrema inferior y superior presentan mayor estabilidad relativa. Este patron sugiere que el modelo distingue adecuadamente viviendas baratas y caras, pero encuentra ambiguedad en observaciones cercanas a los umbrales intermedios. Desde la perspectiva de SmartStay Advisors, la severidad del error depende del salto entre segmentos: clasificar propiedades caras como medias implica un desajuste de valor menos critico que clasificarlas como baratas, escenario que puede traducirse en decisiones de pricing con impacto directo en ingresos. Aunque la comparacion inicial entre entrenamiento y prueba sugiere una brecha importante, la validacion leave-one-out en entrenamiento produce resultados practicamente equivalentes a los de prueba, por lo que la evidencia apunta mas a optimismo de la metrica in-sample que a un sobreajuste estructural del modelo. En este contexto, el valor de `k` seleccionado prioriza flexibilidad local, pero se recomienda continuar con validacion cruzada y ajuste fino para mejorar la robustez de clasificacion, especialmente en la clase media.
 
 ```{r guardar-resultados-c}
 save(
@@ -1091,6 +1297,11 @@ save(
   y_train_cls, y_test_cls,
   k_opt_cls, pred_test_cls,
   cm, accuracy_cls, metricas_resumen, errores_por_clase,
+  pred_train_cls, pred_train_loo_cls,
+  cm_train_cls, cm_test_cls, cm_train_loo_cls,
+  metricas_clase_train, metricas_clase_test, metricas_globales_train_test,
+  pares_confusion, errores_por_clase_test, comparacion_sobreajuste,
+  accuracy_train_cls, accuracy_train_loo_cls, accuracy_test_cls,
   file = "knn_clasificacion_resultados.RData"
 )
 
@@ -1099,9 +1310,8 @@ cat("Objetos exportados a: knn_clasificacion_resultados.RData\n")
 
 ---
 
-# Integración Final (Todos)
 
-## Checklist de integración
+##  integración
 
 ```{r integracion-checklist, results='asis'}
 cat("- Unificar nombres de objetos entre secciones: train_raw, test_raw, X_train_norm, X_test_norm.\n")
@@ -1114,5 +1324,7 @@ cat("- Evitar subtítulos que copien literalmente los enunciados del laboratorio
 
 
 ---
+
+
 
 
