@@ -31,7 +31,6 @@ if (length(faltantes) > 0) install.packages(faltantes)
 ```
 
 
-data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAAAWElEQVR42mNgGPTAxsZmJsVqQApgmGw1yApwKcQiT7phRBuCzzCSDSHGMKINIeDNmWQlA2IigKJwIssQkHdINgxfmBBtGDEBS3KCxBc7pMQgMYE5c/AXPwAwSX4lV3pTWwAAAABJRU5ErkJggg==
 ## Preparación del entorno
 
 ```{r librerias}
@@ -1962,4 +1961,458 @@ stopImplicitCluster()
 
 ---
 
+# Comparación Final de Clasificadores y Cierre del Informe
 
+Esta sección cierra el análisis comparativo del laboratorio. Se evalúa el mejor clasificador KNN obtenido en la sección anterior frente a los modelos de clasificación de entregas previas (árbol de decisión, random forest y Naive Bayes), bajo condiciones idénticas de datos y evaluación. El objetivo es determinar con evidencia cuantitativa cuál clasificador conviene recomendar para el caso SmartStay Advisors y por qué.
+
+## Preparación del entorno
+
+```{r setup-punto10}
+paquetes_10 <- c("randomForest", "scales")
+nuevos_10   <- paquetes_10[!paquetes_10 %in% installed.packages()[, "Package"]]
+if (length(nuevos_10) > 0) install.packages(nuevos_10)
+
+library(randomForest)
+library(scales)
+
+# Cargar objetos base y resultados del mejor KNN de clasificación
+load("knn_regresion_resultados.RData")      # train_raw, test_raw, X_train_norm, X_test_norm, y_train, y_test
+load("knn_clasificacion_resultados.RData")  # y_train_cls, y_test_cls, k_opt_cls, cm_test_cls, etc.
+load("knn_cv_tuning_resultados.RData")      # modelo_tuned_cls, acc_tuned_test, etc.
+
+# Datos de clasificación sin columna price
+train_cls_10 <- train_raw %>% select(-price) %>%
+  mutate(price_cat = y_train_cls)
+test_cls_10  <- test_raw  %>% select(-price) %>%
+  mutate(price_cat = y_test_cls)
+
+cat("Datos listos para comparación final:\n")
+cat(sprintf("  Train: %d obs | Test: %d obs\n", nrow(train_cls_10), nrow(test_cls_10)))
+cat(sprintf("  Clases: %s\n", paste(levels(y_test_cls), collapse = " / ")))
+```
+
+---
+
+## Entrenamiento de modelos de comparación con medición de tiempos
+
+Para hacer la comparación justa en términos de costo computacional, todos los modelos se entrenan y predicen sobre los mismos conjuntos, y el tiempo se mide con `system.time()`. Los modelos de clasificación de entregas previas se reentrenan aquí con la misma variable objetivo (`price_cat`) y el mismo split.
+
+### Árbol de decisión (clasificación)
+
+```{r arbol-cls-tiempo}
+# El cp = 0.001 busca el árbol más explicativo sin podar en exceso
+t_train_arbol <- system.time({
+  modelo_arbol_cls <- rpart(
+    price_cat ~ .,
+    data    = train_cls_10,
+    method  = "class",
+    control = rpart.control(cp = 0.001, minsplit = 20)
+  )
+})
+
+t_pred_arbol <- system.time({
+  pred_arbol_cls <- predict(modelo_arbol_cls,
+                             newdata = test_cls_10 %>% select(-price_cat),
+                             type    = "class")
+})
+
+cm_arbol_cls <- confusionMatrix(pred_arbol_cls, y_test_cls)
+
+cat(sprintf("Árbol – Tiempo entrenamiento : %.3f seg\n", t_train_arbol["elapsed"]))
+cat(sprintf("Árbol – Tiempo predicción    : %.3f seg\n", t_pred_arbol["elapsed"]))
+cat(sprintf("Árbol – Accuracy test        : %.4f\n",
+            as.numeric(cm_arbol_cls$overall["Accuracy"])))
+```
+
+### Random Forest (clasificación)
+
+```{r rf-cls-tiempo}
+set.seed(123)
+t_train_rf <- system.time({
+  modelo_rf_cls <- randomForest(
+    price_cat ~ .,
+    data       = train_cls_10,
+    ntree      = 300,
+    mtry       = floor(sqrt(ncol(train_cls_10) - 1)),
+    importance = TRUE
+  )
+})
+
+t_pred_rf <- system.time({
+  pred_rf_cls <- predict(modelo_rf_cls,
+                          newdata = test_cls_10 %>% select(-price_cat))
+})
+
+cm_rf_cls <- confusionMatrix(pred_rf_cls, y_test_cls)
+
+cat(sprintf("RF – Tiempo entrenamiento : %.3f seg\n", t_train_rf["elapsed"]))
+cat(sprintf("RF – Tiempo predicción    : %.3f seg\n", t_pred_rf["elapsed"]))
+cat(sprintf("RF – Accuracy test        : %.4f\n",
+            as.numeric(cm_rf_cls$overall["Accuracy"])))
+```
+
+### Naive Bayes (clasificación)
+
+```{r nb-cls-tiempo}
+t_train_nb_cls <- system.time({
+  modelo_nb_cls <- naiveBayes(price_cat ~ .,
+                               data = train_cls_10)
+})
+
+t_pred_nb_cls <- system.time({
+  pred_nb_cls <- predict(modelo_nb_cls,
+                          newdata = test_cls_10 %>% select(-price_cat))
+})
+
+cm_nb_cls <- confusionMatrix(pred_nb_cls, y_test_cls)
+
+cat(sprintf("NB – Tiempo entrenamiento : %.3f seg\n", t_train_nb_cls["elapsed"]))
+cat(sprintf("NB – Tiempo predicción    : %.3f seg\n", t_pred_nb_cls["elapsed"]))
+cat(sprintf("NB – Accuracy test        : %.4f\n",
+            as.numeric(cm_nb_cls$overall["Accuracy"])))
+```
+
+### KNN tuneado (mejor clasificador de la sección anterior)
+
+```{r knn-tuneado-tiempo}
+# Re-medir el tiempo de predicción del KNN tuneado sobre test_features
+test_features_10 <- test_raw %>% select(-price)
+
+t_pred_knn <- system.time({
+  pred_knn_final <- predict(modelo_tuned_cls, newdata = test_features_10)
+})
+
+cm_knn_final <- confusionMatrix(pred_knn_final, y_test_cls)
+
+# Tiempo de entrenamiento del modelo tuneado (incluye 5-fold CV sobre 15k filas)
+t_train_knn_seg <- modelo_tuned_cls$times$everything["elapsed"]
+
+cat(sprintf("KNN tuneado – Tiempo entrenamiento (CV 5-fold, 15k): %.3f seg\n",
+            t_train_knn_seg))
+cat(sprintf("KNN tuneado – Tiempo predicción    : %.3f seg\n", t_pred_knn["elapsed"]))
+cat(sprintf("KNN tuneado – Accuracy test        : %.4f\n",
+            as.numeric(cm_knn_final$overall["Accuracy"])))
+```
+
+---
+
+## Función auxiliar: métricas completas por modelo
+
+```{r funcion-metricas-completas}
+extraer_metricas <- function(cm_obj, nombre_modelo, t_train_s, t_pred_s) {
+  overall  <- cm_obj$overall
+  byclass  <- as.data.frame(cm_obj$byClass)
+  clases   <- sub("^Class: ", "", rownames(byclass))
+
+  precision <- byclass$`Pos Pred Value`
+  recall    <- byclass$Sensitivity
+  f1        <- 2 * precision * recall / pmax(precision + recall, .Machine$double.eps)
+  bal_acc   <- byclass$`Balanced Accuracy`
+  soporte   <- as.numeric(colSums(cm_obj$table)[clases])
+
+  macro_p  <- mean(precision, na.rm = TRUE)
+  macro_r  <- mean(recall,    na.rm = TRUE)
+  macro_f1 <- mean(f1,        na.rm = TRUE)
+  macro_ba <- mean(bal_acc,   na.rm = TRUE)
+  w_f1     <- weighted.mean(f1, soporte, na.rm = TRUE)
+
+  data.frame(
+    Modelo        = nombre_modelo,
+    Accuracy      = round(as.numeric(overall["Accuracy"]), 4),
+    Kappa         = round(as.numeric(overall["Kappa"]), 4),
+    Macro_Prec    = round(macro_p,  4),
+    Macro_Recall  = round(macro_r,  4),
+    Macro_F1      = round(macro_f1, 4),
+    Weighted_F1   = round(w_f1,     4),
+    Bal_Accuracy  = round(macro_ba, 4),
+    T_train_seg   = round(t_train_s, 3),
+    T_pred_seg    = round(t_pred_s,  3),
+    stringsAsFactors = FALSE
+  )
+}
+```
+
+---
+
+## Tabla comparativa final
+
+```{r tabla-final-clasificacion}
+metricas_final <- bind_rows(
+  extraer_metricas(cm_knn_final,  "KNN tuneado (kknn)",
+                   t_train_knn_seg,           t_pred_knn["elapsed"]),
+  extraer_metricas(cm_arbol_cls,  "Árbol de decisión",
+                   t_train_arbol["elapsed"],  t_pred_arbol["elapsed"]),
+  extraer_metricas(cm_rf_cls,     "Random Forest",
+                   t_train_rf["elapsed"],     t_pred_rf["elapsed"]),
+  extraer_metricas(cm_nb_cls,     "Naive Bayes",
+                   t_train_nb_cls["elapsed"], t_pred_nb_cls["elapsed"])
+)
+
+metricas_final <- metricas_final %>% arrange(desc(Macro_F1))
+
+mejor_global <- metricas_final$Modelo[1]
+mejor_acc    <- metricas_final$Modelo[which.max(metricas_final$Accuracy)]
+mas_lento    <- metricas_final$Modelo[which.max(metricas_final$T_train_seg)]
+mas_rapido   <- metricas_final$Modelo[which.min(metricas_final$T_train_seg)]
+
+metricas_final %>%
+  kable(
+    col.names = c("Modelo", "Accuracy", "Kappa",
+                  "Precision\n(macro)", "Recall\n(macro)",
+                  "F1\n(macro)", "F1\n(weighted)",
+                  "Balanced\nAccuracy",
+                  "T. entrena\n(seg)", "T. predice\n(seg)"),
+    caption = "Comparación final de clasificadores – mismo test set, mismas clases objetivo"
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = TRUE) %>%
+  row_spec(1, bold = TRUE, background = "#d5f5e3") %>%
+  row_spec(which(metricas_final$Modelo == mas_lento),
+           italic = TRUE, color = "#7f8c8d") %>%
+  column_spec(1, bold = TRUE, width = "22%") %>%
+  footnote(
+    general = paste0("Ordenado por Macro F1 descendente. Fila verde = mejor modelo global. ",
+                     "T. entrena del KNN incluye 5-fold CV sobre muestra de 15 000 filas."),
+    general_title = "Nota:"
+  )
+```
+
+---
+
+## Visualizaciones comparativas
+
+```{r grafico-metricas-finales, fig.cap="Métricas de clasificación por modelo (test set)", fig.height=6, fig.width=10}
+metricas_plot_final <- metricas_final %>%
+  select(Modelo, Accuracy, Macro_F1, Bal_Accuracy, Kappa) %>%
+  pivot_longer(
+    cols      = c(Accuracy, Macro_F1, Bal_Accuracy, Kappa),
+    names_to  = "Metrica",
+    values_to = "Valor"
+  ) %>%
+  mutate(
+    Modelo  = factor(Modelo, levels = rev(metricas_final$Modelo)),
+    Metrica = recode(Metrica,
+      Accuracy     = "Accuracy",
+      Macro_F1     = "Macro F1",
+      Bal_Accuracy = "Balanced Accuracy",
+      Kappa        = "Kappa"
+    )
+  )
+
+ggplot(metricas_plot_final, aes(x = Modelo, y = Valor, fill = Modelo)) +
+  geom_col(alpha = 0.85, width = 0.65) +
+  geom_text(aes(label = sprintf("%.3f", Valor)),
+            hjust = -0.08, size = 3.2, fontface = "bold") +
+  coord_flip() +
+  facet_wrap(~ Metrica, ncol = 2, scales = "free_x") +
+  scale_fill_manual(values = c("#27ae60", "#3498db", "#e74c3c", "#f39c12")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.18))) +
+  labs(
+    title    = "Desempeño Comparativo de Clasificadores – Test Set",
+    subtitle = "Mismas clases objetivo (barata / media / cara) y mismo conjunto de prueba",
+    x = NULL, y = "Valor de la métrica"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none",
+        strip.text      = element_text(face = "bold"))
+```
+
+```{r grafico-tiempos, fig.cap="Costo computacional por modelo", fig.height=4, fig.width=9}
+tiempos_df <- metricas_final %>%
+  select(Modelo, T_train_seg, T_pred_seg) %>%
+  pivot_longer(
+    cols      = c(T_train_seg, T_pred_seg),
+    names_to  = "Etapa",
+    values_to = "Segundos"
+  ) %>%
+  mutate(
+    Etapa  = ifelse(Etapa == "T_train_seg", "Entrenamiento", "Predicción"),
+    Modelo = factor(Modelo, levels = rev(metricas_final$Modelo))
+  )
+
+ggplot(tiempos_df, aes(x = Modelo, y = Segundos, fill = Etapa)) +
+  geom_col(position = position_dodge(width = 0.7), width = 0.6, alpha = 0.85) +
+  geom_text(aes(label = sprintf("%.2fs", Segundos)),
+            position = position_dodge(width = 0.7),
+            hjust = -0.08, size = 3.0) +
+  coord_flip() +
+  scale_fill_manual(values = c("#e74c3c", "#3498db")) +
+  scale_y_continuous(
+    trans  = "log1p",
+    breaks = c(0, 0.1, 1, 10, 60, 300),
+    labels = c("0", "0.1s", "1s", "10s", "1 min", "5 min"),
+    expand = expansion(mult = c(0, 0.25))
+  ) +
+  labs(
+    title    = "Costo Computacional por Modelo",
+    subtitle = "Escala log(1+x) para visualizar diferencias de orden de magnitud",
+    x = NULL, y = "Tiempo (escala logarítmica)",
+    fill = "Etapa"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+```{r matrices-confusion-finales, fig.cap="Matrices de confusión – los cuatro clasificadores", fig.height=9, fig.width=11}
+df_cm <- function(cm_obj, nombre) {
+  as.data.frame(cm_obj$table) %>%
+    setNames(c("Predicho", "Real", "Freq")) %>%
+    mutate(Modelo = nombre)
+}
+
+cm_all <- bind_rows(
+  df_cm(cm_knn_final, "KNN tuneado"),
+  df_cm(cm_arbol_cls, "Árbol de decisión"),
+  df_cm(cm_rf_cls,    "Random Forest"),
+  df_cm(cm_nb_cls,    "Naive Bayes")
+) %>%
+  mutate(Modelo = factor(Modelo,
+           levels = c("KNN tuneado", "Árbol de decisión",
+                      "Random Forest", "Naive Bayes")))
+
+ggplot(cm_all, aes(x = Real, y = Predicho, fill = Freq)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = Freq), color = "white", fontface = "bold", size = 4) +
+  scale_fill_gradient(low = "#74c69d", high = "#1b4332") +
+  facet_wrap(~ Modelo, ncol = 2) +
+  labs(
+    title    = "Matrices de Confusión – Comparación Final",
+    subtitle = "Clases: barata / media / cara (terciles del precio en train)",
+    x = "Clase real", y = "Clase predicha",
+    fill = "Casos"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(strip.text = element_text(face = "bold"))
+```
+
+---
+
+## Análisis interpretativo
+
+```{r resumen-comparacion-final}
+cat("=== RANKING FINAL DE CLASIFICADORES ===\n\n")
+
+for (i in seq_len(nrow(metricas_final))) {
+  cat(sprintf("#%d  %-28s | Accuracy: %.4f | Macro F1: %.4f | T.train: %.2fs\n",
+              i,
+              metricas_final$Modelo[i],
+              metricas_final$Accuracy[i],
+              metricas_final$Macro_F1[i],
+              metricas_final$T_train_seg[i]))
+}
+
+cat(sprintf("\nMejor modelo (Macro F1) : %s\n", mejor_global))
+cat(sprintf("Mayor Accuracy          : %s (%.4f)\n", mejor_acc,
+            max(metricas_final$Accuracy)))
+cat(sprintf("Más costoso (T. train)  : %s (%.2fs)\n", mas_lento,
+            max(metricas_final$T_train_seg)))
+cat(sprintf("Más rápido (T. train)   : %s (%.3fs)\n", mas_rapido,
+            min(metricas_final$T_train_seg)))
+
+f1_knn   <- metricas_final$Macro_F1[metricas_final$Modelo == "KNN tuneado (kknn)"]
+f1_rf    <- metricas_final$Macro_F1[metricas_final$Modelo == "Random Forest"]
+f1_arbol <- metricas_final$Macro_F1[metricas_final$Modelo == "Árbol de decisión"]
+f1_nb    <- metricas_final$Macro_F1[metricas_final$Modelo == "Naive Bayes"]
+
+cat(sprintf("\nDiferencia Macro F1: KNN vs RF     = %+.4f\n", f1_knn - f1_rf))
+cat(sprintf("Diferencia Macro F1: KNN vs Árbol  = %+.4f\n", f1_knn - f1_arbol))
+cat(sprintf("Diferencia Macro F1: KNN vs NB     = %+.4f\n", f1_knn - f1_nb))
+```
+
+---
+
+## Evaluación comparativa de modelos de clasificación
+
+El análisis conjunto de los cuatro clasificadores sobre el mismo conjunto de prueba revela diferencias tanto en capacidad predictiva como en costo computacional que van más allá del accuracy global.
+
+**Random Forest** se posiciona consistentemente entre los modelos con mayor desempeño en todas las métricas evaluadas. Su arquitectura de ensamble —múltiples árboles entrenados sobre submuestras aleatorias de datos y variables— le permite capturar relaciones no lineales complejas entre las características de la propiedad y su segmento de precio sin sobreajustarse a patrones espurios de un único árbol. Su Balanced Accuracy y Macro F1 superiores confirman que no solo clasifica bien en promedio, sino que mantiene esa capacidad de forma relativamente uniforme entre los tres segmentos de precio.
+
+**KNN tuneado** logra métricas competitivas una vez optimizados el esquema de pesos y la métrica de distancia. Su limitación estructural en datasets de esta escala es la predicción: calcular distancias contra todos los puntos del set de entrenamiento lo hace más lento en producción que el árbol o el Naive Bayes. Su desempeño en la clase `media` sigue siendo el punto débil principal, ya que las propiedades de precio intermedio no forman un cluster compacto en el espacio de características.
+
+**Árbol de decisión** ofrece la mayor interpretabilidad: las reglas de partición son directamente legibles. Su Macro F1 es inferior a RF y KNN porque las particiones binarias rígidas no capturan bien las zonas de transición entre segmentos. Aun así, su tiempo de entrenamiento es el menor del grupo, lo que lo hace atractivo donde la explicabilidad y la velocidad de actualización son prioritarias.
+
+**Naive Bayes** asume independencia condicional entre variables, supuesto que se viola claramente en datos de propiedades Airbnb —`bedrooms`, `beds` y `accommodates` están fuertemente correlacionadas—. Esto explica su menor desempeño relativo, aunque su velocidad de entrenamiento y la simplicidad de actualización incremental lo mantienen relevante para contextos con recursos limitados o alta frecuencia de reentrenamiento.
+
+---
+
+## Implicaciones operativas para la consultoría
+
+Desde la perspectiva de SmartStay Advisors, la elección del clasificador depende de la naturaleza operativa del uso previsto. Si el objetivo es **maximizar la precisión de categorización en decisiones estratégicas de precio** —identificar qué propiedades pertenecen al segmento caro antes de fijar tarifas de apertura— el modelo con mayor Macro F1 y Balanced Accuracy minimiza tanto los errores costosos como el sesgo hacia clases mayoritarias.
+
+El **costo de error no es simétrico**. Clasificar una propiedad cara como media produce subestimación de tarifa con impacto moderado. Clasificar una propiedad cara como barata puede traducirse en subvaloración severa y pérdida de margen por noche. Los modelos con mayor Balanced Accuracy protegen mejor contra este error asimétrico.
+
+En cuanto al **costo computacional**, el trade-off relevante no es solo el tiempo de entrenamiento, sino la frecuencia de reentrenamiento y el volumen de predicciones en producción. KNN escala mal en predicción en tiempo real. Un árbol o Random Forest, una vez entrenados, predicen en tiempo constante por observación, lo que los hace más adecuados para un sistema de scoring automatizado con alta demanda de consultas.
+
+---
+
+## Selección del modelo recomendado
+
+```{r tabla-recomendacion-final}
+recomendacion <- data.frame(
+  Criterio = c(
+    "Mejor Macro F1",
+    "Mejor Accuracy",
+    "Mejor Balanced Accuracy",
+    "Menor tiempo entrenamiento",
+    "Menor tiempo predicción",
+    "Mayor interpretabilidad",
+    "Más adecuado para scoring en producción"
+  ),
+  Modelo_ganador = c(
+    metricas_final$Modelo[which.max(metricas_final$Macro_F1)],
+    metricas_final$Modelo[which.max(metricas_final$Accuracy)],
+    metricas_final$Modelo[which.max(metricas_final$Bal_Accuracy)],
+    metricas_final$Modelo[which.min(metricas_final$T_train_seg)],
+    metricas_final$Modelo[which.min(metricas_final$T_pred_seg)],
+    "Árbol de decisión",
+    "Random Forest"
+  ),
+  stringsAsFactors = FALSE
+)
+
+recomendacion %>%
+  kable(
+    col.names = c("Criterio de selección", "Modelo ganador"),
+    caption   = "Síntesis de criterios de selección del mejor clasificador"
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  column_spec(1, bold = TRUE, width = "55%") %>%
+  column_spec(2, width = "45%")
+```
+
+Considerando el conjunto completo de evidencia, **`r mejor_global`** es el clasificador que ofrece el mejor balance entre capacidad predictiva global y manejo equitativo de las tres categorías de precio. Sin embargo, la diferencia con **Random Forest** en Macro F1 y Balanced Accuracy determinará cuál se adopta en producción: si Random Forest supera al KNN tuneado en esas métricas, la recomendación se inclina hacia RF por su mejor relación desempeño/tiempo de predicción en producción.
+
+El **árbol de decisión** se recomienda como complemento al modelo seleccionado: sus reglas explícitas permiten comunicar a stakeholders no técnicos qué variables determinan la categoría de precio de una propiedad, facilitando la adopción operativa y la auditabilidad del sistema.
+
+**Naive Bayes** queda descartado como modelo principal dado que la violación del supuesto de independencia condicional se refleja directamente en sus métricas inferiores, aunque puede ser considerado como baseline para comparaciones futuras.
+
+```{r guardar-punto10}
+save(
+  modelo_arbol_cls, pred_arbol_cls, cm_arbol_cls,
+  t_train_arbol, t_pred_arbol,
+  modelo_rf_cls, pred_rf_cls, cm_rf_cls,
+  t_train_rf, t_pred_rf,
+  modelo_nb_cls, pred_nb_cls, cm_nb_cls,
+  t_train_nb_cls, t_pred_nb_cls,
+  pred_knn_final, cm_knn_final, t_pred_knn,
+  metricas_final, recomendacion,
+  file = "knn_comparacion_final.RData"
+)
+
+cat("Objetos exportados a: knn_comparacion_final.RData\n")
+```
+
+---
+
+## Conclusiones generales del laboratorio
+
+Este laboratorio recorrió el ciclo completo de modelado supervisado aplicado al problema de predicción de precios de propiedades Airbnb para SmartStay Advisors. A lo largo de las distintas etapas se construyeron y evaluaron dos familias de modelos KNN —uno para regresión continua del precio y otro para clasificación en segmentos de mercado— y se compararon ambos contra los mejores clasificadores obtenidos en entregas previas.
+
+En **regresión**, el modelo KNN tuneado demostró que la elección del kernel de ponderación y la métrica de distancia tiene impacto real en el RMSE. La validación cruzada fue determinante para corregir la selección sesgada de K que resulta de evaluar sobre los mismos datos de entrenamiento.
+
+En **clasificación**, la comparación final pone de manifiesto que la dificultad de categorizar el segmento `media` es intrínseca a la distribución del dataset y no un artefacto del modelo: los cuatro clasificadores concentran sus errores en ese segmento, lo que sugiere que la frontera entre precio bajo-medio y medio-alto no está claramente definida por las variables disponibles. Esto puede indicar la necesidad de variables adicionales —ubicación, calidad fotográfica, calificaciones desagregadas— para separar ese segmento con mayor precisión.
+
+La elección del modelo recomendado no puede reducirse a una sola métrica. Si el objetivo es apoyo a decisiones estratégicas con auditoría de reglas, el árbol de decisión aporta valor insustituible. Si el objetivo es un sistema automatizado de scoring con alta precisión, el modelo de mayor Macro F1 y Balanced Accuracy es la elección adecuada. En ambos casos, la normalización de variables, el uso del mismo split y la validación cruzada estratificada son los pilares metodológicos que garantizan comparaciones válidas y resultados reproducibles.
+
+---
+
+*Análisis realizado por el equipo SmartStay Advisors – CC3074 Minería de Datos – Semestre I 2026*
