@@ -1,4 +1,4 @@
-﻿---
+---
 title: "SmartStay Advisors – Predicción de Precios con K-Nearest Neighbors"
 author: "Equipo SmartStay Advisors"
 date: "`r Sys.Date()`"
@@ -30,9 +30,7 @@ faltantes <- paquetes[!paquetes %in% installed.packages()[, "Package"]]
 if (length(faltantes) > 0) install.packages(faltantes)
 ```
 
-
-data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAAAWElEQVR42mNgGPTAxsZmJsVqQApgmGw1yApwKcQiT7phRBuCzzCSDSHGMKINIeDNmWQlA2IigKJwIssQkHdINgxfmBBtGDEBS3KCxBc7pMQgMYE5c/AXPwAwSX4lV3pTWwAAAABJRU5ErkJggg==
-## Preparación del entorno
+<data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAAAWElEQVR42mNgGPTAxsZmJsVqQApgmGw1yApwKcQiT7phRBuCzzCSDSHGMKINIeDNmWQlA2IigKJwIssQkHdINgxfmBBtGDEBS3KCxBc7pMQgMYE5c/AXPwAwSX4lV3pTWwAAAABJRU5ErkJggg==> \## Preparación del entorno
 
 ```{r librerias}
 # Manipulación y visualización
@@ -50,7 +48,7 @@ library(Metrics)   # rmse, mae
 set.seed(123)
 ```
 
----
+------------------------------------------------------------------------
 
 ## Carga y limpieza de datos
 
@@ -128,7 +126,7 @@ ggplot(df_modelo, aes(x = price)) +
   theme_minimal(base_size = 13)
 ```
 
----
+------------------------------------------------------------------------
 
 ## División train/test (mismo split que entregas anteriores)
 
@@ -153,11 +151,11 @@ cat(sprintf("Precio promedio train: $%.2f | test: $%.2f\n",
             mean(train_raw$price), mean(test_raw$price)))
 ```
 
----
+------------------------------------------------------------------------
 
 ## Normalización de variables (min-max)
 
-KNN basa sus predicciones en distancias entre observaciones. Si las variables tienen escalas muy distintas (ej.: `accommodates` va de 1–16 pero `number_of_reviews` puede llegar a 600+), las variables de mayor magnitud dominarán el cálculo de distancia de forma artificial. Por eso **normalizar es un paso crítico y no opcional**.
+KNN basa sus predicciones en distancias entre observaciones. Si las variables tienen escalas muy distintas (ej.: `accommodates` va de 1--16 pero `number_of_reviews` puede llegar a 600+), las variables de mayor magnitud dominarán el cálculo de distancia de forma artificial. Por eso **normalizar es un paso crítico y no opcional**.
 
 Se aplica normalización Min-Max usando únicamente los parámetros del conjunto de entrenamiento, y luego esos mismos parámetros se aplican al conjunto de prueba para evitar *data leakage*.
 
@@ -186,19 +184,17 @@ apply(X_train_norm, 2, range) %>%
   kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
 ```
 
----
+------------------------------------------------------------------------
 
 ## Cómo funciona KNN en regresión
 
 KNN (K-Nearest Neighbors) es un algoritmo de aprendizaje supervisado no paramétrico. En su versión de **regresión**, para predecir el precio de una propiedad nueva:
 
-1. Calcula la **distancia euclidiana** entre esa propiedad y todas las del conjunto de entrenamiento (usando las variables normalizadas).
-2. Identifica los **K vecinos más cercanos** (las K propiedades más similares).
-3. Calcula el **promedio del precio** de esos K vecinos como predicción.
+1.  Calcula la **distancia euclidiana** entre esa propiedad y todas las del conjunto de entrenamiento (usando las variables normalizadas).
+2.  Identifica los **K vecinos más cercanos** (las K propiedades más similares).
+3.  Calcula el **promedio del precio** de esos K vecinos como predicción.
 
-El hiperparámetro **K** controla el balance entre sesgo y varianza:
-- K pequeño → modelo flexible, puede sobreajustarse
-- K grande → modelo suavizado, puede subajustarse
+El hiperparámetro **K** controla el balance entre sesgo y varianza: - K pequeño → modelo flexible, puede sobreajustarse - K grande → modelo suavizado, puede subajustarse
 
 Para la selección inicial de K se utiliza la heurística `K ≈ √n` como punto de partida, y luego se valida con RMSE en entrenamiento.
 
@@ -251,7 +247,7 @@ cat(sprintf("\nK óptimo seleccionado: %d (RMSE train = $%.2f)\n",
             k_optimo, min(rmse_k)))
 ```
 
----
+------------------------------------------------------------------------
 
 ## Entrenamiento del modelo KNN de regresión
 
@@ -277,7 +273,7 @@ cat(sprintf("MAE  : $%.4f\n", mae_train))
 cat(sprintf("R²   : %.4f\n",  r2_train))
 ```
 
----
+------------------------------------------------------------------------
 
 ## Predicción sobre el conjunto de prueba
 
@@ -302,7 +298,7 @@ head(data.frame(
   kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
 ```
 
----
+------------------------------------------------------------------------
 
 ## Evaluación del modelo en el conjunto de prueba
 
@@ -333,11 +329,11 @@ metricas_df %>%
 
 ### Interpretación de las métricas
 
-- **RMSE (Root Mean Squared Error):** Penaliza errores grandes. Un RMSE de `r round(rmse_test, 2)` USD indica que, en promedio, las predicciones se desvían `r round(rmse_test, 2)` dólares del precio real en el conjunto de prueba.
+-   **RMSE (Root Mean Squared Error):** Penaliza errores grandes. Un RMSE de `r round(rmse_test, 2)` USD indica que, en promedio, las predicciones se desvían `r round(rmse_test, 2)` dólares del precio real en el conjunto de prueba.
 
-- **MAE (Mean Absolute Error):** Error absoluto promedio de `r round(mae_test, 2)` USD. Más robusto a outliers que el RMSE.
+-   **MAE (Mean Absolute Error):** Error absoluto promedio de `r round(mae_test, 2)` USD. Más robusto a outliers que el RMSE.
 
-- **R² (Coeficiente de determinación):** El modelo explica el `r round(r2_test * 100, 1)`% de la varianza del precio en datos no vistos. `r ifelse(r2_test > 0.6, "Esto indica un ajuste razonablemente bueno.", ifelse(r2_test > 0.4, "El ajuste es moderado, con margen de mejora.", "El ajuste es limitado; puede mejorar con tuning o más features."))`
+-   **R² (Coeficiente de determinación):** El modelo explica el `r round(r2_test * 100, 1)`% de la varianza del precio en datos no vistos. `r ifelse(r2_test > 0.6, "Esto indica un ajuste razonablemente bueno.", ifelse(r2_test > 0.4, "El ajuste es moderado, con margen de mejora.", "El ajuste es limitado; puede mejorar con tuning o más features."))`
 
 ```{r grafico-real-vs-predicho, fig.cap="Valores reales vs predichos – KNN Regresión (test set)"}
 df_resultados <- data.frame(
@@ -380,7 +376,7 @@ cat(sprintf("¿Sobreestima o subestima?\n%s\n",
            "El modelo tiende a SOBREESTIMAR los precios reales.")))
 ```
 
----
+------------------------------------------------------------------------
 
 ## Decisiones metodológicas documentadas
 
@@ -420,15 +416,15 @@ decisiones %>%
   column_spec(3, width = "54%")
 ```
 
----
+------------------------------------------------------------------------
 
 ## Conclusiones parciales
 
-El modelo KNN de regresión logró un **R² de `r round(r2_test, 3)`** y un **RMSE de $`r round(rmse_test, 2)`** en el conjunto de prueba, lo que indica `r ifelse(r2_test > 0.55, "una capacidad predictiva sólida", "una capacidad predictiva moderada")` para estimar precios de propiedades Airbnb a partir de sus características físicas y de disponibilidad.
+El modelo KNN de regresión logró un **R² de `r round(r2_test, 3)`** y un **RMSE de \$`r round(rmse_test, 2)`** en el conjunto de prueba, lo que indica `r ifelse(r2_test > 0.55, "una capacidad predictiva sólida", "una capacidad predictiva moderada")` para estimar precios de propiedades Airbnb a partir de sus características físicas y de disponibilidad.
 
-La diferencia entre las métricas de entrenamiento y prueba sugiere `r ifelse(abs(rmse_train - rmse_test) / rmse_test < 0.10, "un buen nivel de generalización sin señales de sobreajuste significativo.", ifelse(rmse_test > rmse_train * 1.15, "cierta tendencia al sobreajuste que puede mitigarse aumentando K o reduciendo features.", "un ajuste razonable con leve degradación esperada al generalizar."))` En entregas siguientes se complementará este análisis con validación cruzada y búsqueda de hiperparámetros más exhaustiva (Actividades 7–9).
+La diferencia entre las métricas de entrenamiento y prueba sugiere `r ifelse(abs(rmse_train - rmse_test) / rmse_test < 0.10, "un buen nivel de generalización sin señales de sobreajuste significativo.", ifelse(rmse_test > rmse_train * 1.15, "cierta tendencia al sobreajuste que puede mitigarse aumentando K o reduciendo features.", "un ajuste razonable con leve degradación esperada al generalizar."))` En entregas siguientes se complementará este análisis con validación cruzada y búsqueda de hiperparámetros más exhaustiva (Actividades 7--9).
 
----
+------------------------------------------------------------------------
 
 ```{r guardar-objetos}
 # Exportar objetos para reutilización en secciones posteriores
@@ -447,11 +443,9 @@ cat("Objetos exportados a: knn_regresion_resultados.RData\n")
 cat("(Cargar este archivo para asegurar el mismo split en todo el análisis)\n")
 ```
 
----
+------------------------------------------------------------------------
 
-
-
----
+------------------------------------------------------------------------
 
 # Evaluación y Comparación de Modelos
 
@@ -480,7 +474,7 @@ cat(sprintf("  - KNN k óptimo: %d\n", k_optimo))
 cat(sprintf("  - KNN RMSE test: $%.4f\n", rmse_test))
 ```
 
----
+------------------------------------------------------------------------
 
 ## Evaluación detallada del modelo KNN de regresión
 
@@ -557,7 +551,7 @@ resumen_rangos %>%
   column_spec(3, bold = TRUE)
 ```
 
----
+------------------------------------------------------------------------
 
 ## Modelos de comparación
 
@@ -677,7 +671,7 @@ cat("\nDistribución de predicciones NB:\n")
 print(table(pred_nb_cat))
 ```
 
----
+------------------------------------------------------------------------
 
 ## Tabla comparativa de modelos
 
@@ -702,7 +696,7 @@ comparacion %>%
   row_spec(0, bold = TRUE)
 ```
 
----
+------------------------------------------------------------------------
 
 ## Visualizaciones comparativas
 
@@ -787,7 +781,7 @@ ggplot(df_comp, aes(x = Modelo, y = Residuo_abs, fill = Modelo)) +
   theme(legend.position = "none")
 ```
 
----
+------------------------------------------------------------------------
 
 ## Análisis y conclusión
 
@@ -817,13 +811,13 @@ cat(sprintf("KNN vs Árbol de Regresión (RMSE): %+.2f USD (%s)\n",
 
 La tabla y gráficos anteriores permiten extraer las siguientes conclusiones:
 
-- **Naive Bayes** obtiene el peor desempeño en regresión, lo cual es esperado: al ser un clasificador, pierde toda la continuidad del precio y solo puede predecir tres valores distintos. Su inclusión aquí es solo para comparación formal con entregas previas.
+-   **Naive Bayes** obtiene el peor desempeño en regresión, lo cual es esperado: al ser un clasificador, pierde toda la continuidad del precio y solo puede predecir tres valores distintos. Su inclusión aquí es solo para comparación formal con entregas previas.
 
-- **KNN vs Regresión Lineal:** La regresión lineal es competitiva porque asume una relación lineal entre features y precio. KNN puede capturar relaciones no lineales, pero requiere datos densos en el espacio de características para hacerlo bien. La diferencia entre ambos indica `r ifelse(rmse_test < rmse_lm, "que KNN captura mejor la estructura no lineal del mercado de precios.", "que la relación precio-features tiene componentes mayormente lineales en este dataset.")`.
+-   **KNN vs Regresión Lineal:** La regresión lineal es competitiva porque asume una relación lineal entre features y precio. KNN puede capturar relaciones no lineales, pero requiere datos densos en el espacio de características para hacerlo bien. La diferencia entre ambos indica `r ifelse(rmse_test < rmse_lm, "que KNN captura mejor la estructura no lineal del mercado de precios.", "que la relación precio-features tiene componentes mayormente lineales en este dataset.")`.
 
-- **KNN vs Árbol de Regresión:** El árbol también captura no linealidades, pero lo hace mediante particiones binarias discretas. `r ifelse(rmse_test < rmse_arbol, "KNN supera al árbol, posiblemente porque interpola de forma más suave entre observaciones similares.", "El árbol supera a KNN, sugiriendo que las reglas de negocio (umbrales en variables como 'accommodates' o 'bedrooms') explican el precio mejor que la similitud por distancia.")`.
+-   **KNN vs Árbol de Regresión:** El árbol también captura no linealidades, pero lo hace mediante particiones binarias discretas. `r ifelse(rmse_test < rmse_arbol, "KNN supera al árbol, posiblemente porque interpola de forma más suave entre observaciones similares.", "El árbol supera a KNN, sugiriendo que las reglas de negocio (umbrales en variables como 'accommodates' o 'bedrooms') explican el precio mejor que la similitud por distancia.")`.
 
-- **Modelo recomendado hasta ahora:** `r mejor_modelo` con RMSE de $`r round(min(comparacion$RMSE), 2)` y R² de `r round(comparacion$R2[which.min(comparacion$RMSE)], 3)`. Este será el benchmark a superar en la siguiente etapa con validación cruzada y tuning de hiperparámetros.
+-   **Modelo recomendado hasta ahora:** `r mejor_modelo` con RMSE de $`r round(min(comparacion$RMSE), 2)`y R² de`r round(comparacion$R2[which.min(comparacion$RMSE)], 3)`. Este será el benchmark a superar en la siguiente etapa con validación cruzada y tuning de hiperparámetros.
 
 ```{r guardar-comparacion}
 # Exportar para uso en integración final
@@ -840,11 +834,9 @@ cat("Objetos exportados a: knn_comparacion_resultados.RData\n")
 cat("(Este archivo puede cargarse para la integración final)\n")
 ```
 
----
+------------------------------------------------------------------------
 
-
-
----
+------------------------------------------------------------------------
 
 # KNN Clasificación + Evaluación
 
@@ -866,7 +858,7 @@ cat(sprintf("  - Train: %d observaciones\n", nrow(train_raw)))
 cat(sprintf("  - Test : %d observaciones\n", nrow(test_raw)))
 ```
 
----
+------------------------------------------------------------------------
 
 ## 1) Variable categórica de precio (barata, media, cara)
 
@@ -926,7 +918,7 @@ balance_df %>%
   kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
 ```
 
----
+------------------------------------------------------------------------
 
 ## 2) Implementación de KNN clasificación
 
@@ -971,7 +963,7 @@ ggplot(res_k_cls, aes(x = K, y = Accuracy_train)) +
   theme_minimal(base_size = 13)
 ```
 
----
+------------------------------------------------------------------------
 
 ## 3) Predicción sobre test set
 
@@ -991,7 +983,7 @@ head(data.frame(
   kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
 ```
 
----
+------------------------------------------------------------------------
 
 ## 4) Evaluación del modelo (Accuracy, Precision, Recall)
 
@@ -1038,7 +1030,7 @@ ggplot(cm_df, aes(x = Reference, y = Prediction, fill = Freq)) +
   theme_minimal(base_size = 13)
 ```
 
----
+------------------------------------------------------------------------
 
 ## 5) Análisis de resultados
 
@@ -1079,12 +1071,12 @@ cat(sprintf("Diagnostico de balance: %s\n",
 
 ### Interpretacion inicial
 
-- El modelo KNN de clasificacion alcanza un **accuracy de `r round(accuracy_cls, 3)`** en el conjunto de prueba.
-- La clase con mayor dificultad de prediccion es **`r clase_mas_dificil`**, donde se concentra la mayor tasa de error.
-- El desempeño por clase (precision/recall) sugiere que `r ifelse(max(metricas_resumen$Recall) - min(metricas_resumen$Recall) > 0.15, "el modelo no es homogeneo entre clases y necesita ajuste de K o variables.", "el modelo mantiene un comportamiento relativamente estable entre clases.")`
-- Sobre desbalance: `r ifelse(ratio_max_min > 1.5, "hay evidencia de clases desbalanceadas, lo que puede sesgar predicciones hacia la clase mayoritaria.", "las clases estan razonablemente balanceadas, con impacto limitado en el clasificador.")`
+-   El modelo KNN de clasificacion alcanza un **accuracy de `r round(accuracy_cls, 3)`** en el conjunto de prueba.
+-   La clase con mayor dificultad de prediccion es **`r clase_mas_dificil`**, donde se concentra la mayor tasa de error.
+-   El desempeño por clase (precision/recall) sugiere que `r ifelse(max(metricas_resumen$Recall) - min(metricas_resumen$Recall) > 0.15, "el modelo no es homogeneo entre clases y necesita ajuste de K o variables.", "el modelo mantiene un comportamiento relativamente estable entre clases.")`
+-   Sobre desbalance: `r ifelse(ratio_max_min > 1.5, "hay evidencia de clases desbalanceadas, lo que puede sesgar predicciones hacia la clase mayoritaria.", "las clases estan razonablemente balanceadas, con impacto limitado en el clasificador.")`
 
----
+------------------------------------------------------------------------
 
 ## Eficiencia multiclase y generalizacion
 
@@ -1308,10 +1300,9 @@ save(
 cat("Objetos exportados a: knn_clasificacion_resultados.RData\n")
 ```
 
----
+------------------------------------------------------------------------
 
-
-##  integración
+## integración
 
 ```{r integracion-checklist, results='asis'}
 cat("- Unificar nombres de objetos entre secciones: train_raw, test_raw, X_train_norm, X_test_norm.\n")
@@ -1321,10 +1312,4 @@ cat("- Consolidar conclusiones en tono consultoría (hallazgo -> implicación ->
 cat("- Evitar subtítulos que copien literalmente los enunciados del laboratorio.\n")
 ```
 
-
-
----
-
-
-
-
+------------------------------------------------------------------------
